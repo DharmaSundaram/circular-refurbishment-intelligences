@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Flask / SQLAlchemy instance & SQLite databases
+instance/
+*.sqlite3
+*.db
+
+# Local file uploads
+frontend/uploads/
+uploads/
+
+# Backup & scratch files
+*.bak
+scratch/
+
+# Testing caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment secrets
+.env
+.env.local
+
+# OS generated files
+.DS_Store
+Thumbs.db
