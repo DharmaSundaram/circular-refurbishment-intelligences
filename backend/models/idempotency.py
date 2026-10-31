@@ -1,15 +1,19 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from extensions import db
+
+SCHEMA_NAME = "refurbishment"
+
 
 class IdempotencyEvent(db.Model):
     __tablename__ = "idempotency_events"
+    __table_args__ = {"schema": SCHEMA_NAME}
 
     idempotency_key = db.Column(db.String(128), primary_key=True)
     event_type = db.Column(db.String(64), nullable=False)
     device_id = db.Column(db.String(64), nullable=True)
     transfer_id = db.Column(db.String(64), nullable=True)
     response_payload = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     def to_dict(self):
         return {

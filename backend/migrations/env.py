@@ -100,6 +100,8 @@ def run_migrations_online():
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),
+            include_schemas=True,
+            version_table_schema="refurbishment",
             **conf_args
         )
 

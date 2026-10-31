@@ -1,22 +1,29 @@
-"""Incoming Device API endpoints and device querying."""
+"""Incoming Device API endpoints, querying, and file attachments."""
 
 import json
-from datetime import datetime
-from flask import Blueprint, request, jsonify, current_app
+from datetime import datetime, timezone
+from flask import Blueprint, request, jsonify, current_app, Response
 
 from extensions import db
 from models.device import Device
 from models.transfer import Transfer
 from models.device_file import DeviceFile
 from models.idempotency import IdempotencyEvent
-from api.auth import require_api_key
+from api.auth import require_partner_inbound_api_key, require_internal_auth
+from services.file_service import (
+    upload_file_to_storage,
+    create_signed_url,
+    download_file_bytes,
+    register_remote_file_reference,
+    verify_and_ingest_partner_file,
+)
 
 devices_bp = Blueprint("devices", __name__, url_prefix="/api/v1")
 
 
 @devices_bp.route("/refurbishment/devices", methods=["POST"])
 @devices_bp.route("/devices/receive", methods=["POST"])
-@require_api_key
+@require_partner_inbound_api_key
 def receive_incoming_device():
     """Ingest structured incoming device data from partner Collection Application."""
     if not request.is_json:
@@ -47,10 +54,13 @@ def receive_incoming_device():
     condition = device_info.get("condition")
 
     if not all([dev_type, brand, model, condition]):
-        return jsonify({
-            "error": "Bad Request",
-            "message": "Missing required device attributes: type, brand, model, condition",
-        }), 400
+        return (
+            jsonify({
+                "error": "Bad Request",
+                "message": "Missing required device attributes: type, brand, model, condition",
+            }),
+            400,
+        )
 
     # Idempotency check
     idempotency_key = request.headers.get("Idempotency-Key") or transfer_id
@@ -62,55 +72,82 @@ def receive_incoming_device():
         except Exception:
             return jsonify({"status": "success", "message": "Device already processed", "device_id": device_id}), 200
 
-    # Check if device already exists with another transfer ID
+    # Duplicate prevention: Check if device already exists with another transfer ID
     existing_device = Device.query.filter_by(device_id=device_id).first()
     if existing_device:
-        return jsonify({
-            "error": "Conflict",
-            "message": f"Device {device_id} already exists in the system with source transfer {existing_device.source_transfer_id}",
-        }), 409
+        return (
+            jsonify({
+                "error": "Conflict",
+                "message": f"Device {device_id} already exists in the system with source transfer {existing_device.source_transfer_id}",
+            }),
+            409,
+        )
+
+    # Calculate age without inventing missing data
+    purchase_year = device_info.get("purchase_year")
+    if purchase_year is not None:
+        try:
+            purchase_year = int(purchase_year)
+            current_year = datetime.now(timezone.utc).year
+            age_val = str(max(0, current_year - purchase_year))
+        except (ValueError, TypeError):
+            age_val = str(device_info.get("age")) if device_info.get("age") is not None else None
+    else:
+        age_val = str(device_info.get("age")) if device_info.get("age") is not None else None
+
+    weight_val = None
+    if device_info.get("weight_kg") is not None:
+        try:
+            weight_val = float(device_info["weight_kg"])
+        except (ValueError, TypeError):
+            weight_val = None
 
     try:
-        # Create Device record
+        # Create Device record in refurbishment schema
         device = Device(
             device_id=device_id,
             device_type=str(dev_type).strip(),
             brand=str(brand).strip(),
             model=str(model).strip(),
-            purchase_year=device_info.get("purchase_year"),
-            age=str(device_info.get("age")) if device_info.get("age") is not None else "3",
+            purchase_year=purchase_year,
+            age=age_val,
             condition=str(condition).strip(),
-            power_status=device_info.get("power_status", "Powers on"),
-            screen_condition=device_info.get("screen_condition", "Good"),
-            battery_condition=device_info.get("battery_condition", "Fair"),
-            weight_kg=float(device_info.get("weight_kg") or 1.5),
-            damage_description=device_info.get("damage_description", ""),
+            power_status=device_info.get("power_status"),
+            screen_condition=device_info.get("screen_condition"),
+            battery_condition=device_info.get("battery_condition"),
+            weight_kg=weight_val,
+            damage_description=device_info.get("damage_description"),
             source_application="Collection Application",
             source_transfer_id=transfer_id,
-            received_at=datetime.utcnow(),
+            received_at=datetime.now(timezone.utc),
             status="Received",
         )
         db.session.add(device)
 
-        # Handle file references
+        # Ingest and verify attached partner files
+        # A file reference is never treated as successfully transferred without confirmed accessibility
         files_data = data.get("files", [])
+        verified_count = 0
         if isinstance(files_data, list):
             for idx, file_item in enumerate(files_data):
                 if isinstance(file_item, dict):
-                    f_name = file_item.get("name") or f"file_{idx}.json"
-                    f_type = file_item.get("type") or "document"
-                    s_key = file_item.get("storage_key") or f"ref_{device_id}_{idx}"
-                    dev_file = DeviceFile(
-                        file_id=f"FILE-{device_id}-{idx+1}",
-                        storage_key=s_key,
-                        original_filename=f_name,
-                        content_type="application/json",
-                        file_type=f_type,
-                        device_id=device_id,
-                        is_private=True,
-                        is_local=False,
-                    )
-                    db.session.add(dev_file)
+                    success, dev_file, msg = verify_and_ingest_partner_file(device_id, file_item)
+                    if success and dev_file:
+                        verified_count += 1
+                    else:
+                        current_app.logger.warning(
+                            f"File attachment {idx} for device {device_id} could not be verified: {msg}"
+                        )
+
+        # Response payload
+        resp_payload = {
+            "status": "success",
+            "message": "Device accepted and queued for refurbishment assessment",
+            "device_id": device_id,
+            "transfer_id": transfer_id,
+            "received_at": device.received_at.isoformat(),
+            "files_verified": verified_count,
+        }
 
         # Inbound Transfer audit log
         transfer = Transfer(
@@ -122,7 +159,7 @@ def receive_incoming_device():
             endpoint="/api/v1/refurbishment/devices",
             http_method="POST",
             request_payload=json.dumps(data),
-            response_payload=json.dumps({"status": "success", "message": "Device received and queued"}),
+            response_payload=json.dumps(resp_payload),
             http_status=201,
             status="Completed",
             idempotency_key=idempotency_key,
@@ -131,13 +168,6 @@ def receive_incoming_device():
         db.session.add(transfer)
 
         # Record Idempotency event
-        resp_payload = {
-            "status": "success",
-            "message": "Device accepted and queued for refurbishment assessment",
-            "device_id": device_id,
-            "transfer_id": transfer_id,
-            "received_at": device.received_at.isoformat(),
-        }
         idemp_event = IdempotencyEvent(
             idempotency_key=idempotency_key,
             event_type="device_receive",
@@ -157,6 +187,7 @@ def receive_incoming_device():
 
 
 @devices_bp.route("/devices", methods=["GET"])
+@require_internal_auth
 def list_devices():
     """List devices with optional filtering by status, condition, type, and search term."""
     search_q = request.args.get("search", "").strip().lower()
@@ -194,6 +225,7 @@ def list_devices():
 
 
 @devices_bp.route("/devices/<device_id>", methods=["GET"])
+@require_internal_auth
 def get_device(device_id):
     """Retrieve detailed information for a single device."""
     device = Device.query.filter_by(device_id=device_id).first()
@@ -210,8 +242,9 @@ def get_device(device_id):
 
 
 @devices_bp.route("/queue", methods=["GET"])
+@require_internal_auth
 def get_assessment_queue():
-    """Retrieve queue of devices awaiting assessment."""
+    """Retrieve queue of devices awaiting technical evaluation."""
     pending_devices = Device.query.filter(
         Device.status.in_(["Received", "Queued", "Assessing", "Pending"])
     ).order_by(Device.received_at.asc()).all()
@@ -220,3 +253,73 @@ def get_assessment_queue():
         "queue": [d.to_dict() for d in pending_devices],
         "total": len(pending_devices),
     })
+
+
+@devices_bp.route("/devices/<device_id>/files", methods=["POST"])
+@require_internal_auth
+def upload_device_file(device_id):
+    """Upload an attachment for a device and store in Supabase Storage."""
+    device = Device.query.filter_by(device_id=device_id).first()
+    if not device:
+        return jsonify({"error": "Not Found", "message": f"Device {device_id} not found"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "Bad Request", "message": "No file part in request"}), 400
+
+    uploaded = request.files["file"]
+    if not uploaded.filename:
+        return jsonify({"error": "Bad Request", "message": "No selected file"}), 400
+
+    file_bytes = uploaded.read()
+    content_type = uploaded.content_type or "application/octet-stream"
+    file_type = request.form.get("file_type", "document")
+
+    try:
+        dev_file = upload_file_to_storage(
+            device_id=device_id,
+            original_filename=uploaded.filename,
+            file_bytes=file_bytes,
+            content_type=content_type,
+            file_type=file_type,
+            folder="devices",
+            is_private=True,
+        )
+        return jsonify({
+            "status": "success",
+            "message": "File uploaded successfully",
+            "file": dev_file.to_dict(),
+        }), 201
+    except ValueError as e:
+        return jsonify({"error": "Validation Error", "message": str(e)}), 400
+    except Exception as e:
+        current_app.logger.error(f"File upload error: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error", "message": "Failed to store file"}), 500
+
+
+@devices_bp.route("/devices/<device_id>/files/<file_id>", methods=["GET"])
+@require_internal_auth
+def get_device_file(device_id, file_id):
+    """Retrieve authenticated download or signed URL for a device file."""
+    dev_file = DeviceFile.query.filter_by(file_id=file_id, device_id=device_id).first()
+    if not dev_file:
+        return jsonify({"error": "Not Found", "message": f"File {file_id} not found for device {device_id}"}), 404
+
+    # If in Supabase, generate a signed short-lived URL
+    signed_url = create_signed_url(dev_file.storage_key, expires_in=900)
+    if signed_url:
+        return jsonify({
+            "file": dev_file.to_dict(),
+            "signed_url": signed_url,
+            "expires_in_seconds": 900,
+        }), 200
+
+    # Stream local binary fallback if signed URL not available
+    content = download_file_bytes(dev_file.storage_key)
+    if content is not None:
+        return Response(
+            content,
+            mimetype=dev_file.content_type or "application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename={dev_file.original_filename}"},
+        )
+
+    return jsonify({"file": dev_file.to_dict(), "info": "File is a remote reference without local bytes"}), 200

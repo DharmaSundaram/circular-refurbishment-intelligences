@@ -1,8 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from extensions import db
+
+SCHEMA_NAME = "refurbishment"
+
 
 class Device(db.Model):
     __tablename__ = "devices"
+    __table_args__ = {"schema": SCHEMA_NAME}
 
     VALID_STATUSES = [
         "Received",
@@ -29,10 +33,10 @@ class Device(db.Model):
     damage_description = db.Column(db.Text, nullable=True)
     source_application = db.Column(db.String(128), default="Collection Application")
     source_transfer_id = db.Column(db.String(64), nullable=True)
-    received_at = db.Column(db.DateTime, default=datetime.utcnow)
+    received_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     status = db.Column(db.String(64), default="Received", nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     assessment = db.relationship("Assessment", back_populates="device", uselist=False, cascade="all, delete-orphan")
@@ -49,13 +53,13 @@ class Device(db.Model):
         time_str = self.received_at.strftime("%I:%M %p") if self.received_at else ""
 
         asm = self.assessment
-        score = round(asm.repairability_score, 1) if asm else 86
-        decision = asm.recommendation if asm else "Refurbish"
-        repair_cost = asm.repair_cost if asm else 7100.0
-        comp_val = asm.component_recovery_value if asm else 12100.0
-        refurb_val = asm.estimated_refurbished_value if asm else 24000.0
-        co2_val = asm.co2_avoided_kg if asm else 18.0
-        circ_score = round(asm.circular_recovery_score, 1) if asm else 82.0
+        score = round(asm.repairability_score, 1) if asm else None
+        decision = asm.recommendation if asm else ("Pending Assessment" if self.status in ("Received", "Queued", "Assessing", "Pending") else self.status)
+        repair_cost = asm.repair_cost if asm else 0.0
+        comp_val = asm.component_recovery_value if asm else 0.0
+        refurb_val = asm.estimated_refurbished_value if asm else 0.0
+        co2_val = asm.co2_avoided_kg if asm else 0.0
+        circ_score = round(asm.circular_recovery_score, 1) if asm else None
         components = [c.to_dict() for c in asm.components] if asm else []
 
         return {
@@ -80,13 +84,13 @@ class Device(db.Model):
             "score": score,
             "decision": decision,
             "repair_cost": repair_cost,
-            "repair_cost_fmt": f"₹{repair_cost:,.0f}",
+            "repair_cost_fmt": f"₹{repair_cost:,.0f}" if repair_cost > 0 else "—",
             "component_recovery_value": comp_val,
-            "component_recovery_value_fmt": f"₹{comp_val:,.0f}",
+            "component_recovery_value_fmt": f"₹{comp_val:,.0f}" if comp_val > 0 else "—",
             "estimated_refurbished_value": refurb_val,
-            "estimated_refurbished_value_fmt": f"₹{refurb_val:,.0f}",
+            "estimated_refurbished_value_fmt": f"₹{refurb_val:,.0f}" if refurb_val > 0 else "—",
             "co2_avoided_kg": co2_val,
-            "co2_avoided_fmt": f"{co2_val:.1f} kg CO₂ avoided",
+            "co2_avoided_fmt": f"{co2_val:.1f} kg CO₂ avoided" if co2_val > 0 else "—",
             "circular_recovery_score": circ_score,
             "technical_summary": asm.technical_summary if asm else "",
             "components": components,

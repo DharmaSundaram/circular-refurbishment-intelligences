@@ -1,8 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from extensions import db
+
+SCHEMA_NAME = "refurbishment"
+
 
 class Assessment(db.Model):
     __tablename__ = "assessments"
+    __table_args__ = {"schema": SCHEMA_NAME}
 
     RECOMMENDATION_REFURBISH = "Refurbish"
     RECOMMENDATION_PARTS_RECOVERY = "Parts Recovery"
@@ -17,7 +21,12 @@ class Assessment(db.Model):
     ]
 
     assessment_id = db.Column(db.String(64), primary_key=True)
-    device_id = db.Column(db.String(64), db.ForeignKey("devices.device_id", ondelete="CASCADE"), unique=True, nullable=False)
+    device_id = db.Column(
+        db.String(64),
+        db.ForeignKey(f"{SCHEMA_NAME}.devices.device_id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
     repairability_score = db.Column(db.Float, nullable=False)
     circular_recovery_score = db.Column(db.Float, nullable=False)
     repair_cost = db.Column(db.Float, nullable=False)
@@ -27,9 +36,9 @@ class Assessment(db.Model):
     recommendation = db.Column(db.String(64), nullable=False)
     technical_summary = db.Column(db.Text, nullable=False)
     assessor = db.Column(db.String(128), default="Refurbishment Admin", nullable=False)
-    assessed_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    assessed_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relationships
     device = db.relationship("Device", back_populates="assessment")
@@ -57,9 +66,14 @@ class Assessment(db.Model):
 
 class AssessmentComponent(db.Model):
     __tablename__ = "assessment_components"
+    __table_args__ = {"schema": SCHEMA_NAME}
 
     component_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    assessment_id = db.Column(db.String(64), db.ForeignKey("assessments.assessment_id", ondelete="CASCADE"), nullable=False)
+    assessment_id = db.Column(
+        db.String(64),
+        db.ForeignKey(f"{SCHEMA_NAME}.assessments.assessment_id", ondelete="CASCADE"),
+        nullable=False,
+    )
     component_name = db.Column(db.String(64), nullable=False)
     condition = db.Column(db.String(64), nullable=False)
     recoverable = db.Column(db.Boolean, default=True, nullable=False)
@@ -69,7 +83,6 @@ class AssessmentComponent(db.Model):
     assessment = db.relationship("Assessment", back_populates="components")
 
     def to_dict(self):
-        # Format action and recovery potential strings for UI
         potential = "High" if self.recoverable and self.condition == "Good" else ("Medium" if self.recoverable else "Low")
         action = "Recover" if self.recoverable and self.condition == "Good" else ("Repair / Recover" if self.recoverable else "Replace")
         return {

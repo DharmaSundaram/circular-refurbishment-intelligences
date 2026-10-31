@@ -1,19 +1,23 @@
-"""Analytics and aggregation API endpoints for Dashboard and Recovery Analysis."""
+"""Analytics and aggregation API endpoints for Dashboard and Recovery Intelligence."""
 
-from flask import Blueprint, jsonify, request
+from datetime import datetime, timezone
+import requests
+from flask import Blueprint, jsonify, current_app
 from sqlalchemy import func
+
 from extensions import db
 from models.device import Device
 from models.assessment import Assessment, AssessmentComponent
-from models.recovery import RecoveryAnalysis
 from models.transfer import Transfer
+from api.auth import require_internal_auth
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/api/v1")
 
 
 @analytics_bp.route("/dashboard", methods=["GET"])
+@require_internal_auth
 def get_dashboard_metrics():
-    """Compute live dashboard metrics directly from the database."""
+    """Compute live dashboard metrics directly from the database without fabricated statistics."""
     total_devices = Device.query.count()
 
     pending_count = Device.query.filter(
@@ -27,8 +31,9 @@ def get_dashboard_metrics():
     refurb_candidates = Assessment.query.filter_by(recommendation="Refurbish").count()
     parts_recovery_count = Assessment.query.filter_by(recommendation="Parts Recovery").count()
     recycle_count = Assessment.query.filter_by(recommendation="Recycle").count()
+    reject_count = Assessment.query.filter_by(recommendation="Reject").count()
 
-    # Financial sums
+    # Financial and environmental sums
     financials = db.session.query(
         func.coalesce(func.sum(Assessment.estimated_refurbished_value), 0.0),
         func.coalesce(func.sum(Assessment.component_recovery_value), 0.0),
@@ -38,12 +43,12 @@ def get_dashboard_metrics():
         func.coalesce(func.avg(Assessment.circular_recovery_score), 0.0),
     ).first()
 
-    total_refurb_val = financials[0]
-    total_parts_val = financials[1]
-    total_repair_cost = financials[2]
-    total_co2 = financials[3]
-    avg_repairability = financials[4]
-    avg_circular = financials[5]
+    total_refurb_val = float(financials[0]) if financials else 0.0
+    total_parts_val = float(financials[1]) if financials else 0.0
+    total_repair_cost = float(financials[2]) if financials else 0.0
+    total_co2 = float(financials[3]) if financials else 0.0
+    avg_repairability = float(financials[4]) if financials else 0.0
+    avg_circular = float(financials[5]) if financials else 0.0
 
     total_recovery_value = total_refurb_val if total_refurb_val > 0 else total_parts_val
 
@@ -57,17 +62,49 @@ def get_dashboard_metrics():
             .filter(Device.device_type.ilike(f"%{cat}%"))
             .scalar()
         )
-        cat_averages[cat] = round(avg, 1)
+        cat_averages[cat] = round(float(avg), 1)
 
-    # Recent lists
-    recent_devices = [d.to_dict() for d in Device.query.order_by(Device.received_at.desc()).limit(5).all()]
-    recent_transfers = [t.to_dict() for t in Transfer.query.order_by(Transfer.created_at.desc()).limit(5).all()]
+    # Real Collection Application Connectivity Check (Phase 8 Requirement)
+    collection_url = current_app.config.get("COLLECTION_API_URL", "").rstrip("/")
+    collection_key = current_app.config.get("COLLECTION_API_KEY", "")
+    partner_connected = False
+    partner_status = "Not Configured"
 
-    # Format numbers into INR lakh format if desired (e.g. ₹8.42L)
+    if collection_url:
+        try:
+            headers = {"X-API-Key": collection_key} if collection_key else {}
+            resp = requests.get(f"{collection_url}/api/health", headers=headers, timeout=2)
+            if resp.status_code in (200, 204):
+                partner_connected = True
+                partner_status = "Connected"
+            else:
+                partner_status = f"Degraded (HTTP {resp.status_code})"
+        except Exception:
+            partner_status = "Disconnected"
+
+    # Real synchronization timestamp from the most recent completed transfer
+    latest_transfer = (
+        Transfer.query.filter_by(status="Completed")
+        .order_by(Transfer.created_at.desc())
+        .first()
+    )
+    if not latest_transfer:
+        latest_transfer = Transfer.query.order_by(Transfer.created_at.desc()).first()
+
+    sync_iso = latest_transfer.created_at.isoformat() if latest_transfer else None
+    sync_fmt = (
+        latest_transfer.created_at.strftime("%b %d, %Y · %I:%M %p")
+        if latest_transfer
+        else "No sync recorded"
+    )
+
     def fmt_lakh(val):
         if val >= 100000:
             return f"₹{val / 100000:.2f}L"
         return f"₹{val:,.0f}"
+
+    recent_devices = [d.to_dict() for d in Device.query.order_by(Device.received_at.desc()).limit(5).all()]
+    recent_transfers = [t.to_dict() for t in Transfer.query.order_by(Transfer.created_at.desc()).limit(5).all()]
 
     return jsonify({
         "metrics": {
@@ -78,6 +115,7 @@ def get_dashboard_metrics():
             "refurbishment_candidates": refurb_candidates,
             "parts_recovery": parts_recovery_count,
             "recycling": recycle_count,
+            "rejected": reject_count,
             "total_recovery_value": round(total_recovery_value, 2),
             "total_recovery_value_fmt": fmt_lakh(total_recovery_value),
             "total_repair_cost": round(total_repair_cost, 2),
@@ -89,13 +127,47 @@ def get_dashboard_metrics():
             "average_repairability": round(avg_repairability, 1),
             "average_circular_recovery": round(avg_circular, 1),
             "category_averages": cat_averages,
+            "partner_status": partner_status,
+            "partner_connected": partner_connected,
+            "last_sync_timestamp": sync_iso,
+            "last_sync_formatted": sync_fmt,
+            "decision_distribution": {
+                "Refurbish": refurb_candidates,
+                "Parts Recovery": parts_recovery_count,
+                "Recycle": recycle_count,
+                "Reject": reject_count,
+            },
+            "repairability_overview": {
+                "average_score": round(avg_repairability, 1),
+                "average_circular_recovery": round(avg_circular, 1),
+                "categories": cat_averages,
+            },
+        },
+        "partner_connection": {
+            "status": partner_status,
+            "connected": partner_connected,
+            "last_sync_timestamp": sync_iso,
+            "last_sync_formatted": sync_fmt,
+            "endpoint": collection_url or None,
         },
         "recent_devices": recent_devices,
         "recent_transfers": recent_transfers,
+        "decision_distribution": {
+            "Refurbish": refurb_candidates,
+            "Parts Recovery": parts_recovery_count,
+            "Recycle": recycle_count,
+            "Reject": reject_count,
+        },
+        "repairability_overview": {
+            "average_score": round(avg_repairability, 1),
+            "average_circular_recovery": round(avg_circular, 1),
+            "categories": cat_averages,
+        },
     })
 
 
 @analytics_bp.route("/recovery-analysis", methods=["GET"])
+@require_internal_auth
 def get_recovery_analysis():
     """Retrieve aggregated recovery intelligence across all assessed devices."""
     financials = db.session.query(
@@ -106,11 +178,11 @@ def get_recovery_analysis():
         func.coalesce(func.sum(Device.weight_kg), 0.0),
     ).join(Device, Device.device_id == Assessment.device_id).first()
 
-    total_refurb = financials[0]
-    total_parts = financials[1]
-    total_repair = financials[2]
-    total_co2 = financials[3]
-    total_weight = financials[4]
+    total_refurb = float(financials[0]) if financials else 0.0
+    total_parts = float(financials[1]) if financials else 0.0
+    total_repair = float(financials[2]) if financials else 0.0
+    total_co2 = float(financials[3]) if financials else 0.0
+    total_weight = float(financials[4]) if financials else 0.0
 
     total_recovery = total_refurb if total_refurb > 0 else total_parts
 
@@ -119,7 +191,6 @@ def get_recovery_analysis():
             return f"₹{val / 100000:.2f}L"
         return f"₹{val:,.0f}"
 
-    # Component value aggregation
     comp_groups = [
         ("Displays", ["display", "panel"]),
         ("SSDs & storage", ["ssd", "storage"]),
@@ -138,11 +209,10 @@ def get_recovery_analysis():
         )
         component_totals.append({
             "name": label,
-            "value": round(val, 2),
-            "value_fmt": fmt_lakh(val),
+            "value": round(float(val), 2),
+            "value_fmt": fmt_lakh(float(val)),
         })
 
-    # Pathway counts
     pathway_counts = {
         "Refurbish": Assessment.query.filter_by(recommendation="Refurbish").count(),
         "Parts Recovery": Assessment.query.filter_by(recommendation="Parts Recovery").count(),

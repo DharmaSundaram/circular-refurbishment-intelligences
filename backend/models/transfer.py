@@ -1,12 +1,23 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from extensions import db
 
+SCHEMA_NAME = "refurbishment"
+
+
 class Transfer(db.Model):
     __tablename__ = "transfers"
+    __table_args__ = (
+        db.Index("ix_transfers_idempotency_key", "idempotency_key"),
+        {"schema": SCHEMA_NAME},
+    )
 
     transfer_id = db.Column(db.String(64), primary_key=True)
-    device_id = db.Column(db.String(64), db.ForeignKey("devices.device_id", ondelete="SET NULL"), nullable=True)
+    device_id = db.Column(
+        db.String(64),
+        db.ForeignKey(f"{SCHEMA_NAME}.devices.device_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     direction = db.Column(db.String(32), nullable=False)  # "Inbound" or "Outbound"
     sender = db.Column(db.String(128), nullable=False)
     receiver = db.Column(db.String(128), nullable=False)
@@ -19,8 +30,8 @@ class Transfer(db.Model):
     idempotency_key = db.Column(db.String(128), index=True, nullable=True)
     retry_count = db.Column(db.Integer, default=0, nullable=False)
     error_message = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
     device = db.relationship("Device", back_populates="transfers")
 
@@ -28,7 +39,6 @@ class Transfer(db.Model):
         file_name = f"device_{self.device_id}.json" if self.direction == "Inbound" else f"assessment_{self.device_id}.json"
         time_str = self.created_at.strftime("%I:%M %p") if self.created_at else ""
 
-        # Safe parsing of json payloads
         req_parsed = None
         resp_parsed = None
         if self.request_payload:

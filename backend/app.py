@@ -1,8 +1,10 @@
 """Flask server for Refurbishment Intelligence platform.
 
 Provides REST APIs, database models, partner integrations, and serves the UI.
+Authoritative backend implementation for the Circular E-Waste platform.
 """
 
+import os
 from pathlib import Path
 from flask import Flask, abort, jsonify, send_from_directory
 try:
@@ -14,7 +16,6 @@ from sqlalchemy import text
 from config import Config
 from extensions import db, migrate
 from api import register_api_blueprints
-from seed import seed_database
 
 
 def create_app(dist_directory=None, config_class=None):
@@ -36,17 +37,24 @@ def create_app(dist_directory=None, config_class=None):
     # Register API blueprints
     register_api_blueprints(app)
 
-    # Auto-initialize database tables and seed data if not in testing mode
-    with app.app_context():
-        try:
-            db.create_all()
-            if not app.config.get("TESTING"):
-                from seed import seed_database
-                seed_database()
-        except Exception as e:
-            app.logger.warning(f"Database initialization: {e}")
+    # Database initialization:
+    # Cold starts on Vercel/Production MUST NOT execute migrations automatically.
+    # In local testing or explicit development mode, auto-create tables if needed.
+    is_prod = app.config.get("IS_PRODUCTION", False)
+    is_testing = app.config.get("TESTING", False)
+    is_vercel = os.environ.get("VERCEL") == "1"
 
-    # Locate UI bundle (supports ../public, ../frontend/ui, and local ui/)
+    if is_testing or (not is_prod and not is_vercel and app.config.get("AUTO_CREATE_DEV_DB", True)):
+        with app.app_context():
+            try:
+                db.create_all()
+                if not is_testing and app.config.get("AUTO_SEED", False):
+                    from seed import seed_database
+                    seed_database()
+            except Exception as e:
+                app.logger.warning(f"Database initialization: {e}")
+
+    # Locate UI bundle (supports root public/, frontend/ui/, and local ui/)
     if actual_dist is not None:
         dist = Path(actual_dist).resolve()
     else:
@@ -62,7 +70,7 @@ def create_app(dist_directory=None, config_class=None):
 
     @app.get("/api/health")
     def health():
-        """Health check verifying UI build and database connectivity."""
+        """Public health check verifying UI build and database connectivity without exposing sensitive data."""
         ui_ok = (dist / "index.html").is_file()
         db_status = "ok"
         app_status = "ok"
@@ -88,7 +96,7 @@ def create_app(dist_directory=None, config_class=None):
     def index():
         if not (dist / "index.html").is_file():
             return (
-                "UI bundle not found. Run sh flask-app/export-ui.sh from the repository root.",
+                "UI bundle not found. Ensure public/index.html is deployed.",
                 503,
                 {"Content-Type": "text/plain; charset=utf-8"},
             )
@@ -113,14 +121,37 @@ def create_app(dist_directory=None, config_class=None):
 
     @app.cli.command("seed-db")
     def seed_db_command():
-        """Seed initial development/demo records into the database."""
+        """Seed baseline development/demo records into the database."""
+        from seed import seed_database
         seed_database()
         print("Database seeded successfully.")
+
+    @app.cli.command("migrate-refurbishment-schema")
+    def migrate_refurbishment_schema():
+        """Apply authoritative Alembic migrations for refurbishment schema (empty schema)."""
+        from flask_migrate import upgrade
+        with app.app_context():
+            schema_name = app.config.get("DB_SCHEMA", "refurbishment")
+            uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+            if not uri.startswith("sqlite"):
+                db.session.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name};"))
+                db.session.commit()
+            upgrade()
+            print(f"Refurbishment schema '{schema_name}' migrated to head via Alembic.")
+
+    @app.cli.command("stamp-refurbishment-schema")
+    def stamp_refurbishment_schema():
+        """Stamp an already-initialized refurbishment schema at current Alembic head."""
+        from flask_migrate import stamp
+        with app.app_context():
+            schema_name = app.config.get("DB_SCHEMA", "refurbishment")
+            stamp()
+            print(f"Refurbishment schema '{schema_name}' stamped at Alembic head.")
 
     return app
 
 
-app = create_app()
-
+# Single application initialization when run directly
 if __name__ == "__main__":
+    app = create_app()
     app.run(port=5000)
