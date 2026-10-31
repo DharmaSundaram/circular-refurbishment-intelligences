@@ -1,18 +1,35 @@
 import os
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-INSTANCE_DIR = BASE_DIR / "instance"
-INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+# When running in serverless environments (like Vercel), the filesystem is read-only except /tmp
+if os.environ.get("VERCEL"):
+    INSTANCE_DIR = Path("/tmp/instance")
+    UPLOADS_DIR = Path("/tmp/uploads")
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+    INSTANCE_DIR = BASE_DIR / "instance"
+    UPLOADS_DIR = BASE_DIR / "uploads"
 
-UPLOADS_DIR = BASE_DIR / "uploads"
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+
+try:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "refurbishment-intelligence-secret-key-2026")
     
-    # Database Configuration: support SQLite locally and PostgreSQL on Render
-    db_url = os.environ.get("DATABASE_URL", f"sqlite:///{INSTANCE_DIR / 'refurbishment.sqlite3'}")
+    # Database Configuration: support SQLite locally and PostgreSQL on Render / Vercel
+    default_sqlite = f"sqlite:///{INSTANCE_DIR / 'refurbishment.sqlite3'}"
+    db_url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or default_sqlite
+    )
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
     

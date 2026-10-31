@@ -1,0 +1,13 @@
+.git
+.vscode
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+instance/*.sqlite3
+backend/instance/*.sqlite3
+frontend/instance/*.sqlite3
+backend/tests
+frontend/tests
