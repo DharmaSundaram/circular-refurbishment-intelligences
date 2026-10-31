@@ -37,11 +37,26 @@ def create_app(dist_directory=None, config_class=None):
     # Register API blueprints
     register_api_blueprints(app)
 
-    dist = (
-        Path(actual_dist).resolve()
-        if actual_dist is not None
-        else Path(__file__).resolve().parent / "ui"
-    )
+    # Auto-initialize database tables and seed data if not in testing mode
+    with app.app_context():
+        try:
+            db.create_all()
+            if not app.config.get("TESTING"):
+                from seed import seed_database
+                seed_database()
+        except Exception as e:
+            app.logger.warning(f"Database initialization: {e}")
+
+    # Locate UI bundle (supports ../public, local ui, and parent public)
+    if actual_dist is not None:
+        dist = Path(actual_dist).resolve()
+    else:
+        root_public = Path(__file__).resolve().parent.parent / "public"
+        local_ui = Path(__file__).resolve().parent / "ui"
+        if (root_public / "index.html").is_file():
+            dist = root_public
+        else:
+            dist = local_ui
 
     @app.get("/api/health")
     def health():
