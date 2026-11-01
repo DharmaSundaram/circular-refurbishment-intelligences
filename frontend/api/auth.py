@@ -113,7 +113,11 @@ def require_internal_auth(f):
         is_production = current_app.config.get("IS_PRODUCTION", False) or os.environ.get("VERCEL") == "1"
         admin_key = get_configured_admin_key()
 
-        # 1. Check API Key header/payload (for machine / server-side administrative access)
+        # 1. Check administrator session first (primary mechanism for browser dashboard)
+        if session.get("admin") or session.get("authenticated"):
+            return f(*args, **kwargs)
+
+        # 2. Check API Key header/payload (for machine / server-side administrative access)
         supplied_key = _extract_request_key()
         if supplied_key:
             # If in production and ADMIN_API_KEY is missing from environment, return 500 Configuration Error
@@ -146,18 +150,6 @@ def require_internal_auth(f):
                 "error": "Unauthorized",
                 "message": "Invalid administrator API key.",
             }), 401
-
-        # 2. Check administrator session (for dashboard operations)
-        if session.get("admin") or session.get("authenticated"):
-            return f(*args, **kwargs)
-
-        # 3. In live deployment (non-TESTING mode), allow read-only GET requests from the browser
-        # and automatically bootstrap administrator session cookie so subsequent actions (POST) succeed
-        if not current_app.config.get("TESTING", False) and request.method == "GET":
-            session["admin"] = True
-            session["authenticated"] = True
-            session.permanent = True
-            return f(*args, **kwargs)
 
         # If in production and ADMIN_API_KEY is missing at runtime
         if is_production and not admin_key:
@@ -229,10 +221,6 @@ def admin_logout():
 @auth_bp.route("/session", methods=["GET"])
 def check_session():
     """Check administrator session status and runtime ADMIN_API_KEY configuration."""
-    if not current_app.config.get("TESTING", False):
-        session["admin"] = True
-        session["authenticated"] = True
-        session.permanent = True
     is_auth = bool(session.get("admin") or session.get("authenticated"))
     admin_key = get_configured_admin_key()
     return jsonify({

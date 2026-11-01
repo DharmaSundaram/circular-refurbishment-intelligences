@@ -79,8 +79,8 @@ def send_assessment_result_to_collection(
         "recommended_action": assessment.recommendation,
         "co2_avoided_kg": round(float(assessment.co2_avoided_kg), 1),
         "environmental_benefit": round(float(assessment.co2_avoided_kg), 1),
-        "notes": assessment.technical_summary,
-        "technical_summary": assessment.technical_summary,
+        "notes": assessment.technical_summary or "",
+        "technical_summary": assessment.technical_summary or "",
         "assessed_at": assessment.assessed_at.isoformat() if assessment.assessed_at else datetime.now(timezone.utc).isoformat(),
     }
 
@@ -138,18 +138,24 @@ def send_assessment_result_to_collection(
         resp_text = resp.text
         is_success = 200 <= http_status < 300
         error_msg = None if is_success else f"HTTP error {http_status}"
-        if is_success and resp_text:
+
+        # Parse upstream JSON response safely whether success or error
+        if resp_text:
             try:
                 resp_json = resp.json()
                 if isinstance(resp_json, dict):
-                    if resp_json.get("success") is False:
+                    upstream_err = resp_json.get("message") or resp_json.get("error")
+                    if not is_success and upstream_err:
+                        error_msg = str(upstream_err)
+                    elif resp_json.get("success") is False:
                         is_success = False
-                        error_msg = resp_json.get("error") or resp_json.get("message") or "Upstream returned success: false"
+                        error_msg = upstream_err or "Upstream returned success: false"
                     elif "error" in resp_json and resp_json.get("error"):
                         is_success = False
                         error_msg = str(resp_json.get("error"))
             except Exception:
                 pass
+
         transfer_status = "Completed" if is_success else "Failed"
     else:
         http_status = 503
@@ -183,9 +189,17 @@ def send_assessment_result_to_collection(
     db.session.commit()
 
     if is_success:
+        current_app.logger.info(
+            "Assessment callback successfully delivered to Collection | transfer_id=%s, device_id=%s, status=%s",
+            transfer_id, assessment.device_id, http_status,
+        )
         msg = f"Assessment result delivered to Collection Application · {http_status} OK"
     else:
         detailed_err = error_msg or f"HTTP {http_status}"
+        current_app.logger.warning(
+            "Assessment callback failed to Collection | transfer_id=%s, device_id=%s, status=%s, error=%s, upstream_preview=%s",
+            transfer_id, assessment.device_id, http_status, error_msg, (resp_text or "")[:400],
+        )
         msg = f"Failed to deliver assessment to Collection Application (HTTP {http_status}): {detailed_err}"
     return is_success, http_status, msg, transfer
 
@@ -224,18 +238,23 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
         transfer.response_payload = resp.text
         is_success = 200 <= resp.status_code < 300
         error_msg = None if is_success else f"HTTP error {resp.status_code}"
-        if is_success and resp.text:
+
+        if resp.text:
             try:
                 resp_json = resp.json()
                 if isinstance(resp_json, dict):
-                    if resp_json.get("success") is False:
+                    upstream_err = resp_json.get("message") or resp_json.get("error")
+                    if not is_success and upstream_err:
+                        error_msg = str(upstream_err)
+                    elif resp_json.get("success") is False:
                         is_success = False
-                        error_msg = resp_json.get("error") or resp_json.get("message") or "Upstream returned success: false"
+                        error_msg = upstream_err or "Upstream returned success: false"
                     elif "error" in resp_json and resp_json.get("error"):
                         is_success = False
                         error_msg = str(resp_json.get("error"))
             except Exception:
                 pass
+
         transfer.status = "Completed" if is_success else "Failed"
         transfer.error_message = error_msg
         transfer.updated_at = datetime.now(timezone.utc)
@@ -249,9 +268,17 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
         db.session.commit()
 
         if is_success:
+            current_app.logger.info(
+                "Transfer retried successfully | transfer_id=%s, status=%s",
+                transfer_id, resp.status_code,
+            )
             msg = f"Transfer retried · {resp.status_code} OK"
         else:
             detailed_err = error_msg or f"HTTP {resp.status_code}"
+            current_app.logger.warning(
+                "Transfer retry failed | transfer_id=%s, status=%s, error=%s, upstream_preview=%s",
+                transfer_id, resp.status_code, error_msg, (resp.text or "")[:400],
+            )
             msg = f"Retry failed (HTTP {resp.status_code}): {detailed_err}"
         return is_success, resp.status_code, msg, transfer
 

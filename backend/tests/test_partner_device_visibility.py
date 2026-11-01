@@ -241,10 +241,19 @@ class PartnerDeviceVisibilityTests(unittest.TestCase):
             self.assertIn("devices awaiting assessment", content)
 
     def test_09_dashboard_counts_unconstrained_by_period_and_accessible(self):
-        """Verify dashboard metrics are accessible anonymously and accurately reflect database counts with filters."""
-        # Unauthenticated request returns 200
+        """Verify dashboard metrics require administrator session and accurately reflect database counts with filters."""
+        # Unauthenticated request returns 401
         anon_client = self.app.test_client()
-        resp_anon = anon_client.get("/api/v1/dashboard")
+        resp_unauth = anon_client.get("/api/v1/dashboard")
+        self.assertEqual(resp_unauth.status_code, 401)
+
+        # Authenticated session returns 200
+        auth_client = self.app.test_client()
+        with auth_client.session_transaction() as sess:
+            sess["admin"] = True
+            sess["authenticated"] = True
+
+        resp_anon = auth_client.get("/api/v1/dashboard")
         self.assertEqual(resp_anon.status_code, 200)
         metrics = resp_anon.get_json()["metrics"]
         self.assertEqual(metrics["incoming_devices"], 3)
@@ -252,7 +261,7 @@ class PartnerDeviceVisibilityTests(unittest.TestCase):
         self.assertEqual(metrics["refurbishment_candidates"], 0)
 
         # Date filter 'This month' retains full database incoming devices count
-        resp_month = anon_client.get("/api/v1/dashboard?period=This%20month")
+        resp_month = auth_client.get("/api/v1/dashboard?period=This%20month")
         self.assertEqual(resp_month.status_code, 200)
         metrics_month = resp_month.get_json()["metrics"]
         self.assertEqual(metrics_month["incoming_devices"], 3)
@@ -278,7 +287,7 @@ class PartnerDeviceVisibilityTests(unittest.TestCase):
         db.session.commit()
 
         # Re-check metrics: Pending Assessments = 2 (remaining Received devices without assessment)
-        resp_updated = anon_client.get("/api/v1/dashboard")
+        resp_updated = auth_client.get("/api/v1/dashboard")
         self.assertEqual(resp_updated.status_code, 200)
         upd_metrics = resp_updated.get_json()["metrics"]
         self.assertEqual(upd_metrics["incoming_devices"], 3)

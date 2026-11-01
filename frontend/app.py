@@ -1,10 +1,12 @@
 """Flask server for Refurbishment Intelligence platform.
 
-Serves the React UI, provides REST APIs, database models, and partner integrations.
+Provides REST APIs, database models, partner integrations, and serves the UI.
+Authoritative backend implementation for the Circular E-Waste platform.
 """
 
+import os
 from pathlib import Path
-from flask import Flask, abort, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, send_from_directory, session, request
 try:
     from werkzeug.security import safe_join
 except ImportError:
@@ -14,12 +16,10 @@ from sqlalchemy import text
 from config import Config
 from extensions import db, migrate
 from api import register_api_blueprints
-from seed import seed_database
 
 
 def create_app(dist_directory=None, config_class=None):
     """Application factory supporting dist_directory and optional config_class."""
-    # Handle callers that pass config_class as first argument or dist_directory as first argument
     if isinstance(dist_directory, type):
         actual_config = dist_directory
         actual_dist = None
@@ -37,30 +37,40 @@ def create_app(dist_directory=None, config_class=None):
     # Register API blueprints
     register_api_blueprints(app)
 
-    # Auto-initialize database tables and seed data if not in testing mode
-    with app.app_context():
-        try:
-            db.create_all()
-            if not app.config.get("TESTING"):
-                from seed import seed_database
-                seed_database()
-        except Exception as e:
-            app.logger.warning(f"Database initialization: {e}")
+    # Database initialization:
+    # Cold starts on Vercel/Production MUST NOT execute migrations automatically.
+    # In local testing or explicit development mode, auto-create tables if needed.
+    is_prod = app.config.get("IS_PRODUCTION", False)
+    is_testing = app.config.get("TESTING", False)
+    is_vercel = os.environ.get("VERCEL") == "1"
 
-    # Locate UI bundle (supports ../public, local ui, and parent public)
+    if is_testing or (not is_prod and not is_vercel and app.config.get("AUTO_CREATE_DEV_DB", True)):
+        with app.app_context():
+            try:
+                db.create_all()
+                if not is_testing and app.config.get("AUTO_SEED", False):
+                    from seed import seed_database
+                    seed_database()
+            except Exception as e:
+                app.logger.warning(f"Database initialization: {e}")
+
+    # Locate UI bundle (supports root public/, frontend/ui/, and local ui/)
     if actual_dist is not None:
         dist = Path(actual_dist).resolve()
     else:
         root_public = Path(__file__).resolve().parent.parent / "public"
+        frontend_ui = Path(__file__).resolve().parent.parent / "frontend" / "ui"
         local_ui = Path(__file__).resolve().parent / "ui"
         if (root_public / "index.html").is_file():
             dist = root_public
+        elif (frontend_ui / "index.html").is_file():
+            dist = frontend_ui
         else:
             dist = local_ui
 
     @app.get("/api/health")
     def health():
-        """Health check verifying UI build and database connectivity."""
+        """Public health check verifying UI build and database connectivity without exposing sensitive data."""
         ui_ok = (dist / "index.html").is_file()
         db_status = "ok"
         app_status = "ok"
@@ -78,6 +88,7 @@ def create_app(dist_directory=None, config_class=None):
                 status=app_status,
                 database=db_status,
                 ui_build_available=ui_ok,
+                schema=app.config.get("DB_SCHEMA", "refurbishment"),
             ),
             200 if app_status == "ok" else 503,
         )
@@ -86,10 +97,12 @@ def create_app(dist_directory=None, config_class=None):
     def index():
         if not (dist / "index.html").is_file():
             return (
-                "UI bundle not found. Run sh flask-app/export-ui.sh from the repository root.",
+                "UI bundle not found. Ensure public/index.html is deployed.",
                 503,
                 {"Content-Type": "text/plain; charset=utf-8"},
             )
+        # Authentication is exclusively performed via POST /api/v1/auth/login or session cookies.
+        # Query parameter key authentication is strictly prohibited to prevent credential leakage in logs and history.
         response = send_from_directory(dist, "index.html")
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -111,14 +124,47 @@ def create_app(dist_directory=None, config_class=None):
 
     @app.cli.command("seed-db")
     def seed_db_command():
-        """Seed initial development/demo records into the database."""
+        """Seed baseline development/demo records into the database."""
+        from seed import seed_database
         seed_database()
         print("Database seeded successfully.")
+
+    @app.cli.command("migrate-refurbishment-schema")
+    def migrate_refurbishment_schema():
+        """Apply authoritative Alembic migrations for refurbishment schema (empty schema)."""
+        from flask_migrate import upgrade
+        with app.app_context():
+            schema_name = app.config.get("DB_SCHEMA", "refurbishment")
+            uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+            if not uri.startswith("sqlite"):
+                db.session.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name};"))
+                db.session.commit()
+            upgrade()
+            print(f"Refurbishment schema '{schema_name}' migrated to head via Alembic.")
+
+    @app.cli.command("stamp-refurbishment-schema")
+    def stamp_refurbishment_schema():
+        """Stamp an already-initialized refurbishment schema at current Alembic head."""
+        from flask_migrate import stamp
+        with app.app_context():
+            schema_name = app.config.get("DB_SCHEMA", "refurbishment")
+            stamp()
+            print(f"Refurbishment schema '{schema_name}' stamped at Alembic head.")
+
+    @app.cli.command("check-db")
+    def check_db_command():
+        """Execute read-only database connectivity and schema diagnostics."""
+        from scripts.db_diagnostic import run_database_diagnostic, print_diagnostic_report
+        uri = app.config.get("SQLALCHEMY_DATABASE_URI")
+        results = run_database_diagnostic(uri)
+        print_diagnostic_report(results)
+        if results["status"] not in ("PASS", "WARN"):
+            raise SystemExit(1)
 
     return app
 
 
-app = create_app()
-
+# Single application initialization when run directly
 if __name__ == "__main__":
+    app = create_app()
     app.run(port=5000)

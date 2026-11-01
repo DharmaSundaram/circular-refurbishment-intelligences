@@ -120,7 +120,9 @@ class Config:
     SESSION_COOKIE_NAME = "refurbishment_session"
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SECURE = IS_PRODUCTION or (os.environ.get("VERCEL") == "1")
-    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
+    SESSION_COOKIE_PATH = "/"
+    SESSION_COOKIE_DOMAIN = os.environ.get("SESSION_COOKIE_DOMAIN") or None
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)
 
     # Dedicated PostgreSQL schema for Refurbishment Intelligence

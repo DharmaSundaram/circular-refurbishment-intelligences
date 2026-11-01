@@ -52,6 +52,7 @@ def get_period_bounds(period_str: str, tz_offset_hours: float = 5.5):
 
 
 @analytics_bp.route("/dashboard", methods=["GET"])
+@require_internal_auth
 def get_dashboard_metrics():
     """Compute live dashboard metrics directly from the database without fabricated statistics."""
     period = request.args.get("period", "").strip() or request.args.get("range", "").strip()
@@ -235,6 +236,7 @@ def get_dashboard_metrics():
 
 
 @analytics_bp.route("/recovery-analysis", methods=["GET"])
+@require_internal_auth
 def get_recovery_analysis():
     """Retrieve aggregated recovery intelligence across all assessed devices with date filtering."""
     period = request.args.get("period", "").strip() or request.args.get("range", "").strip()
