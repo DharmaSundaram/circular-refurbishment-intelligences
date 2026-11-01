@@ -16,6 +16,7 @@ if str(backend_dir) not in sys.path:
 # Ensure VERCEL environment variable is set
 os.environ.setdefault("VERCEL", "1")
 
+from werkzeug.middleware.proxy_fix import ProxyFix
 from app import create_app
 
 # Point dist to public directory if present, otherwise frontend/ui
@@ -25,6 +26,7 @@ dist_dir = public_dir if (public_dir / "index.html").is_file() else frontend_ui
 
 # Create Flask application instance (named 'app' for Vercel WSGI)
 app = create_app(dist_directory=dist_dir)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
 if __name__ == "__main__":
     app.run()

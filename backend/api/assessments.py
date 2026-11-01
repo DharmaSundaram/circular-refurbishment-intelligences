@@ -214,7 +214,7 @@ def send_assessment_result():
     if not assessment_id:
         return jsonify({"error": "Bad Request", "message": "assessment_id or device_id is required"}), 400
 
-    force = bool(data.get("force_resend", False) or data.get("force", False))
+    force = bool(data.get("force_resend", False) or data.get("force", False) or data.get("retry", False))
     success, http_code, message, transfer = send_assessment_result_to_collection(
         assessment_id, force_resend=force
     )

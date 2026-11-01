@@ -103,6 +103,7 @@ def create_app(dist_directory=None, config_class=None):
             )
         session["admin"] = True
         session["authenticated"] = True
+        session.permanent = True
         response = send_from_directory(dist, "index.html")
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -118,6 +119,7 @@ def create_app(dist_directory=None, config_class=None):
         if not filename.startswith("assets/"):
             session["admin"] = True
             session["authenticated"] = True
+            session.permanent = True
         response = send_from_directory(dist, filename)
         if filename.startswith("assets/"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"

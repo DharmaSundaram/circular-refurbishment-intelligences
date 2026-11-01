@@ -131,5 +131,38 @@ class ReportsAndCallbacksTests(unittest.TestCase):
         self.assertEqual(retried.status, "Completed")
 
 
+    @patch("services.callback_service.requests.post")
+    def test_ui_resend_assessment_result_with_session(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = '{"success": true, "message": "Received"}'
+        mock_post.return_value = mock_resp
+
+        # 1. UI visit to root loads index and receives administrator session
+        ui_resp = self.client.get("/")
+        self.assertEqual(ui_resp.status_code, 200)
+
+        # 2. Browser UI clicks "Send result again" (/api/v1/assessment-results/send)
+        resp = self.client.post(
+            "/api/v1/assessment-results/send",
+            json={"device_id": "EW-TEST-REP"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("http_status"), 200)
+
+    def test_ui_resend_assessment_result_unauthenticated(self):
+        # Fresh client without session or API key
+        fresh_client = self.app.test_client()
+        resp = fresh_client.post(
+            "/api/v1/assessment-results/send",
+            json={"device_id": "EW-TEST-REP"},
+        )
+        self.assertEqual(resp.status_code, 401)
+        data = resp.get_json()
+        self.assertIn("Administrator authentication required", data.get("message", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

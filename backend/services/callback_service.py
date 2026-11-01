@@ -64,14 +64,14 @@ def send_assessment_result_to_collection(
         "device_id": assessment.device_id,
         "transfer_id": transfer_id,
         "assessment_id": assessment.assessment_id,
-        "repairability_score": int(round(assessment.repairability_score)),
-        "circular_recovery_score": int(round(assessment.circular_recovery_score)),
-        "repair_cost": round(assessment.repair_cost, 2),
-        "component_value": round(assessment.component_recovery_value, 2),
-        "component_recovery_value": round(assessment.component_recovery_value, 2),
-        "estimated_refurbished_value": round(assessment.estimated_refurbished_value, 2),
+        "repairability_score": round(float(assessment.repairability_score), 1),
+        "circular_recovery_score": round(float(assessment.circular_recovery_score), 1),
+        "repair_cost": round(float(assessment.repair_cost), 2),
+        "component_value": round(float(assessment.component_recovery_value), 2),
+        "component_recovery_value": round(float(assessment.component_recovery_value), 2),
+        "estimated_refurbished_value": round(float(assessment.estimated_refurbished_value), 2),
         "recommendation": assessment.recommendation,
-        "co2_avoided_kg": round(assessment.co2_avoided_kg, 1),
+        "co2_avoided_kg": round(float(assessment.co2_avoided_kg), 1),
         "technical_summary": assessment.technical_summary,
         "assessed_at": assessment.assessed_at.isoformat() if assessment.assessed_at else datetime.now(timezone.utc).isoformat(),
     }
@@ -103,6 +103,7 @@ def send_assessment_result_to_collection(
     headers = {
         "Content-Type": "application/json",
         "X-API-Key": api_key,
+        "Authorization": f"Bearer {api_key}",
         "Idempotency-Key": assessment.assessment_id,
     }
 
@@ -187,6 +188,7 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
     headers = {
         "Content-Type": "application/json",
         "X-API-Key": api_key,
+        "Authorization": f"Bearer {api_key}",
         "Idempotency-Key": transfer.idempotency_key or transfer.transfer_id,
     }
 

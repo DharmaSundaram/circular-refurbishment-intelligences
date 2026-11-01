@@ -1,5 +1,6 @@
 import os
 import urllib.parse
+from datetime import timedelta
 from pathlib import Path
 from sqlalchemy.pool import NullPool
 
@@ -109,11 +110,18 @@ class Config:
     )
 
     # Application Secret Key
-    SECRET_KEY = os.environ.get("SECRET_KEY")
+    SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("CIRCULAR_SECRET_KEY")
     if not SECRET_KEY:
         if IS_PRODUCTION:
             raise ValueError("SECRET_KEY must be configured in production environment.")
         SECRET_KEY = "refurbishment-intelligence-dev-secret-key-2026"
+
+    # Session cookie security configuration for production and Vercel HTTPS
+    SESSION_COOKIE_NAME = "refurbishment_session"
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SECURE = IS_PRODUCTION or (os.environ.get("VERCEL") == "1")
+    SESSION_COOKIE_SAMESITE = "Lax"
+    PERMANENT_SESSION_LIFETIME = timedelta(days=7)
 
     # Dedicated PostgreSQL schema for Refurbishment Intelligence
     DB_SCHEMA = os.environ.get("DB_SCHEMA", "refurbishment")

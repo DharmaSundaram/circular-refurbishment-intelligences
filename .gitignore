@@ -26,6 +26,8 @@ scratch/
 .pytest_cache/
 .coverage
 htmlcov/
+*.log
+backend/tests/logs/
 
 # Environment secrets
 .env
