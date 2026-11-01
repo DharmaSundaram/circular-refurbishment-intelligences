@@ -101,16 +101,8 @@ def create_app(dist_directory=None, config_class=None):
                 503,
                 {"Content-Type": "text/plain; charset=utf-8"},
             )
-        query_key = request.args.get("admin_key") or request.args.get("key")
-        if query_key:
-            admin_key = app.config.get("ADMIN_API_KEY")
-            dev_key = app.config.get("CIRCULAR_API_KEY") if not app.config.get("IS_PRODUCTION", False) else None
-            valid_keys = [k for k in (admin_key, dev_key) if k]
-            if valid_keys and query_key in valid_keys:
-                session["admin"] = True
-                session["authenticated"] = True
-                session.permanent = True
-
+        # Authentication is exclusively performed via POST /api/v1/auth/login with secure session cookies.
+        # Query parameter key authentication is strictly prohibited to prevent credential leakage in logs and history.
         response = send_from_directory(dist, "index.html")
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -123,16 +115,6 @@ def create_app(dist_directory=None, config_class=None):
         safe_path = safe_join(str(dist), filename)
         if safe_path is None or not Path(safe_path).is_file():
             abort(404)
-        if filename.endswith(".html") or not filename.startswith("assets/"):
-            query_key = request.args.get("admin_key") or request.args.get("key")
-            if query_key:
-                admin_key = app.config.get("ADMIN_API_KEY")
-                dev_key = app.config.get("CIRCULAR_API_KEY") if not app.config.get("IS_PRODUCTION", False) else None
-                valid_keys = [k for k in (admin_key, dev_key) if k]
-                if valid_keys and query_key in valid_keys:
-                    session["admin"] = True
-                    session["authenticated"] = True
-                    session.permanent = True
         response = send_from_directory(dist, filename)
         if filename.startswith("assets/"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"

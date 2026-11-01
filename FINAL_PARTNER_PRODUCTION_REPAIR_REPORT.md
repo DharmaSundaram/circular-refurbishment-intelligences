@@ -18,7 +18,7 @@ Investigation identified three root causes:
 
 ### Resolution
 - **Frontend Synchronization Engine:** Replaced static fallback records with live state management. Added 5-second recurring polling (`window.setInterval(syncData, 5000)`) and tab-focus synchronization. Demo records are now strictly gated behind `?demo=true`.
-- **Privilege Separation & Strict Auth:** Removed automatic session escalation on `GET /`. Dashboard authentication is now strictly enforced via `POST /api/v1/auth/login` (or explicit `?key=` query parameter) validating `ADMIN_API_KEY`.
+- **Privilege Separation & Strict Auth:** Removed automatic session escalation on `GET /`. Removed any administrator-key authentication through URL query parameters. Dashboard authentication is now strictly enforced via `POST /api/v1/auth/login` validating `ADMIN_API_KEY` and setting encrypted, HTTPOnly session cookies.
 - **Full Schema Qualification & Model Integrity:** Verified that all models explicitly declare `__table_args__ = {"schema": "refurbishment"}`. SQLAlchemy uses `NullPool` for Supabase Transaction Pooler (port 6543) and sets `search_path = "refurbishment,public"`.
 - **Callback Body Validation:** Updated `callback_service.py` to parse upstream JSON responses, record descriptive errors, and support idempotent retries.
 - **Comprehensive Verification:** 85 automated tests now cover the entire lifecycle, achieving a 100% pass rate.
@@ -68,7 +68,7 @@ All models explicitly declare `refurbishment` schema:
 - `Assessment`: `refurbishment.assessments` (Primary Key: `assessment_id`, Foreign Key: `device_id`)
 - `Transfer`: `refurbishment.transfers` (Primary Key: `transfer_id`, Foreign Key: `device_id`)
 - `DeviceFile`: `refurbishment.device_files` (Foreign Key: `device_id`)
-- `IdempotencyEvent`: `refurbishment.idempotency_keys`
+- `IdempotencyEvent`: `refurbishment.idempotency_events` (canonical table in models and Alembic; resilient non-destructive fallback and compatibility view provided for `refurbishment.idempotency_keys`)
 - `RecoveryAnalysis`: `refurbishment.recovery_analyses`
 - `Report`: `refurbishment.reports`
 
@@ -84,7 +84,7 @@ Endpoint: `POST /api/v1/refurbishment/devices`
 1. **Authentication:** Enforces `PARTNER_INBOUND_API_KEY` via `X-API-Key` or `Authorization: Bearer <key>`. Invalid or missing keys are rejected with 401 or 403.
 2. **Payload Validation:** Requires `device_id`, `transfer_id`, and `device` object containing `type`, `brand`, `model`, and `condition`.
 3. **Idempotency & Duplicate Protection:**
-   - Checks `refurbishment.idempotency_keys` for `Idempotency-Key` or `transfer_id`.
+   - Checks `refurbishment.idempotency_events` for `Idempotency-Key` or `transfer_id` (with fallback to `idempotency_keys`).
    - If previously processed, returns cached response with HTTP 200, `persisted: true`, and `duplicate: true`.
    - If the same device exists with a matching transfer ID, returns HTTP 200 idempotent acknowledgment.
    - If the device exists under a conflicting transfer ID, returns HTTP 409 Conflict.
@@ -201,7 +201,7 @@ Endpoint: `POST /api/v1/refurbishment/devices`
 | **Workspace Admin Key** | `ADMIN_API_KEY` | Dashboard operations, view queue, run assessments, trigger callbacks | None |
 
 - Anonymous visitors to `GET /` are served the UI shell without privilege escalation.
-- Admin sessions are established via `POST /api/v1/auth/login` or `/?key=<ADMIN_API_KEY>`.
+- Admin sessions are established exclusively via `POST /api/v1/auth/login` (or via header `X-API-Key` / `Authorization: Bearer` for machine clients). Administrator authentication via URL query parameters is strictly prohibited.
 
 ---
 
@@ -289,3 +289,4 @@ curl -s -H "X-API-Key: <ADMIN_API_KEY>" https://[PARTNER-DEPLOYMENT].vercel.app/
 curl -s -H "X-API-Key: <ADMIN_API_KEY>" https://[PARTNER-DEPLOYMENT].vercel.app/api/v1/queue
 ```
 The application is fully verified, mathematically sound, decoupled, and production-ready.
+

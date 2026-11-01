@@ -138,9 +138,9 @@ class ReportsAndCallbacksTests(unittest.TestCase):
         mock_resp.text = '{"success": true, "message": "Received"}'
         mock_post.return_value = mock_resp
 
-        # 1. UI establishes administrator session via admin key
-        ui_resp = self.client.get("/?key=test-key")
-        self.assertEqual(ui_resp.status_code, 200)
+        # 1. Administrator establishes session via secure login
+        login_resp = self.client.post("/api/v1/auth/login", json={"admin_key": "test-key"})
+        self.assertEqual(login_resp.status_code, 200)
 
         # 2. Browser UI clicks "Send result again" (/api/v1/assessment-results/send)
         resp = self.client.post(

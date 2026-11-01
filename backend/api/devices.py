@@ -64,7 +64,29 @@ def receive_incoming_device():
 
     # Idempotency check
     idempotency_key = request.headers.get("Idempotency-Key") or transfer_id
-    existing_idemp = IdempotencyEvent.query.filter_by(idempotency_key=idempotency_key).first()
+    existing_idemp = None
+    try:
+        existing_idemp = IdempotencyEvent.query.filter_by(idempotency_key=idempotency_key).first()
+    except Exception:
+        # Resilient fallback if table in Supabase is named idempotency_keys
+        db.session.rollback()
+        try:
+            from sqlalchemy import text
+            schema_name = current_app.config.get("DB_SCHEMA", "refurbishment")
+            row = db.session.execute(
+                text(f"SELECT response_payload FROM {schema_name}.idempotency_keys WHERE idempotency_key = :k"),
+                {"k": idempotency_key}
+            ).fetchone()
+            if row:
+                existing_idemp = IdempotencyEvent(
+                    idempotency_key=idempotency_key,
+                    event_type="device_receive",
+                    device_id=device_id,
+                    transfer_id=transfer_id,
+                    response_payload=row[0]
+                )
+        except Exception:
+            db.session.rollback()
     if existing_idemp:
         try:
             cached_resp = json.loads(existing_idemp.response_payload)
@@ -195,17 +217,38 @@ def receive_incoming_device():
         )
         db.session.add(transfer)
 
-        # Record Idempotency event
-        idemp_event = IdempotencyEvent(
-            idempotency_key=idempotency_key,
-            event_type="device_receive",
-            device_id=device_id,
-            transfer_id=transfer_id,
-            response_payload=json.dumps(resp_payload),
-        )
-        db.session.add(idemp_event)
+        # Record Idempotency event (with fallback to idempotency_keys if needed)
+        try:
+            idemp_event = IdempotencyEvent(
+                idempotency_key=idempotency_key,
+                event_type="device_receive",
+                device_id=device_id,
+                transfer_id=transfer_id,
+                response_payload=json.dumps(resp_payload),
+            )
+            db.session.add(idemp_event)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            try:
+                from sqlalchemy import text
+                schema_name = current_app.config.get("DB_SCHEMA", "refurbishment")
+                db.session.execute(
+                    text(f"INSERT INTO {schema_name}.idempotency_keys (idempotency_key, event_type, device_id, transfer_id, response_payload, created_at) VALUES (:k, :et, :did, :tid, :rp, :ca)"),
+                    {
+                        "k": idempotency_key,
+                        "et": "device_receive",
+                        "did": device_id,
+                        "tid": transfer_id,
+                        "rp": json.dumps(resp_payload),
+                        "ca": datetime.now(timezone.utc),
+                    }
+                )
+                db.session.commit()
+            except Exception as ex_idemp:
+                db.session.rollback()
+                current_app.logger.warning(f"Idempotency record persistence warning: {ex_idemp}")
 
-        db.session.commit()
         return jsonify(resp_payload), 201
 
     except Exception as e:

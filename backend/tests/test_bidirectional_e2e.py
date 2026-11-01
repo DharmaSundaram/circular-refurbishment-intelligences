@@ -157,9 +157,9 @@ class BidirectionalE2ETests(unittest.TestCase):
         db.session.add(dev)
         db.session.commit()
 
-        # Step 1: UI access loads index with key and receives session cookie
-        root_resp = self.client.get("/?key=test-session-admin-key")
-        self.assertEqual(root_resp.status_code, 200)
+        # Step 1: Administrator logs in via secure POST /api/v1/auth/login
+        login_resp = self.client.post("/api/v1/auth/login", json={"admin_key": "test-session-admin-key"})
+        self.assertEqual(login_resp.status_code, 200)
 
         # Step 2: Browser SPA fetches device registry with session cookie
         dev_resp = self.client.get("/api/v1/devices")
@@ -204,8 +204,8 @@ class BidirectionalE2ETests(unittest.TestCase):
         db.session.add(asm)
         db.session.commit()
 
-        # Browser UI triggers 'Send result again'
-        self.client.get("/?key=test-session-admin-key")  # Seed session
+        # Administrator logs in to establish session
+        self.client.post("/api/v1/auth/login", json={"admin_key": "test-session-admin-key"})
         resp = self.client.post(
             "/api/v1/assessment-results/send",
             json={"device_id": "EW-2026-CB-DEV"},

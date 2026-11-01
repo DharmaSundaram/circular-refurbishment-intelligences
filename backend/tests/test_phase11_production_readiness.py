@@ -256,6 +256,11 @@ class ProductionReadinessComprehensiveTests(unittest.TestCase):
         queue_resp = fresh_client.get("/api/v1/queue")
         self.assertEqual(queue_resp.status_code, 401)
 
+        # Query parameter authentication through URL is prohibited and does NOT elevate privileges
+        fresh_client.get(f"/?key={self.test_config.ADMIN_API_KEY}")
+        resp_query = fresh_client.get("/api/v1/devices")
+        self.assertEqual(resp_query.status_code, 401)
+
     # -------------------------------------------------------------------------
     # TEST G: Invalid inbound API key rejected with 403 (or 401)
     # -------------------------------------------------------------------------

@@ -164,8 +164,11 @@ def run_database_diagnostic(db_url: str = None) -> Dict[str, Any]:
                 found_tables = {r[0] for r in tables_res}
                 results["tables_found"] = sorted(list(found_tables))
 
+                has_idemp = "idempotency_events" in found_tables or "idempotency_keys" in found_tables
                 for req_tbl in REQUIRED_TABLES:
                     if req_tbl not in found_tables:
+                        if req_tbl == "idempotency_events" and has_idemp:
+                            continue
                         results["missing_tables"].append(req_tbl)
 
                 if results["missing_tables"]:
@@ -229,8 +232,11 @@ def run_database_diagnostic(db_url: str = None) -> Dict[str, Any]:
                 tables_res = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table';")).fetchall()
                 found_tables = {r[0] for r in tables_res}
                 results["tables_found"] = sorted(list(found_tables))
+                has_idemp = "idempotency_events" in found_tables or "idempotency_keys" in found_tables
                 for req_tbl in REQUIRED_TABLES:
                     if req_tbl not in found_tables:
+                        if req_tbl == "idempotency_events" and has_idemp:
+                            continue
                         results["missing_tables"].append(req_tbl)
 
             # Determine overall status

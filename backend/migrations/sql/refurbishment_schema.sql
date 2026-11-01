@@ -38,6 +38,19 @@ CREATE TABLE IF NOT EXISTS refurbishment.idempotency_events (
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- Compatibility view ensuring idempotency_events and idempotency_keys resolve identically
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'refurbishment' AND table_name = 'idempotency_keys')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'refurbishment' AND table_name = 'idempotency_events') THEN
+        CREATE OR REPLACE VIEW refurbishment.idempotency_events AS SELECT * FROM refurbishment.idempotency_keys;
+    ELSIF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'refurbishment' AND table_name = 'idempotency_events')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'refurbishment' AND table_name = 'idempotency_keys') THEN
+        CREATE OR REPLACE VIEW refurbishment.idempotency_keys AS SELECT * FROM refurbishment.idempotency_events;
+    END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS refurbishment.assessments (
     assessment_id VARCHAR(64) PRIMARY KEY,
     device_id VARCHAR(64) NOT NULL UNIQUE REFERENCES refurbishment.devices(device_id) ON DELETE CASCADE,
