@@ -52,36 +52,34 @@ def get_period_bounds(period_str: str, tz_offset_hours: float = 5.5):
 
 
 @analytics_bp.route("/dashboard", methods=["GET"])
-@require_internal_auth
 def get_dashboard_metrics():
     """Compute live dashboard metrics directly from the database without fabricated statistics."""
     period = request.args.get("period", "").strip() or request.args.get("range", "").strip()
-    start_utc, end_utc = get_period_bounds(period)
 
-    device_query = Device.query
-    assessment_query = Assessment.query
+    # Authoritative counts according to system specification:
+    # 1. Incoming Devices = COUNT(*) FROM refurbishment.devices
+    total_devices = Device.query.count()
 
-    if start_utc:
-        device_query = device_query.filter(func.coalesce(Device.received_at, Device.created_at) >= start_utc)
-        assessment_query = assessment_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) >= start_utc)
-    if end_utc:
-        device_query = device_query.filter(func.coalesce(Device.received_at, Device.created_at) < end_utc)
-        assessment_query = assessment_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) < end_utc)
+    # 2. Pending Assessments = Received devices without a persisted assessment
+    pending_count = (
+        db.session.query(func.count(Device.device_id))
+        .outerjoin(Assessment, Device.device_id == Assessment.device_id)
+        .filter(
+            Device.status.in_(["Received", "Queued", "Assessing", "Pending"]),
+            Assessment.assessment_id.is_(None),
+        )
+        .scalar()
+        or 0
+    )
 
-    total_devices = device_query.count()
+    # 3. Completed Assessments
+    completed_count = Assessment.query.count()
 
-    pending_count = device_query.filter(
-        Device.status.in_(["Received", "Queued", "Assessing", "Pending"])
-    ).count()
-
-    completed_count = device_query.filter(
-        Device.status.in_(["Assessed", "Refurbishment Recommended", "Parts Recovery Recommended", "Completed"])
-    ).count()
-
-    refurb_candidates = assessment_query.filter_by(recommendation="Refurbish").count()
-    parts_recovery_count = assessment_query.filter_by(recommendation="Parts Recovery").count()
-    recycle_count = assessment_query.filter_by(recommendation="Recycle").count()
-    reject_count = assessment_query.filter_by(recommendation="Reject").count()
+    # 4. Recommendation distributions: actual persisted assessments
+    refurb_candidates = Assessment.query.filter_by(recommendation="Refurbish").count()
+    parts_recovery_count = Assessment.query.filter_by(recommendation="Parts Recovery").count()
+    recycle_count = Assessment.query.filter_by(recommendation="Recycle").count()
+    reject_count = Assessment.query.filter_by(recommendation="Reject").count()
 
     # Financial and environmental sums
     fin_query = db.session.query(
@@ -91,13 +89,7 @@ def get_dashboard_metrics():
         func.coalesce(func.sum(Assessment.co2_avoided_kg), 0.0),
         func.coalesce(func.avg(Assessment.repairability_score), 0.0),
         func.coalesce(func.avg(Assessment.circular_recovery_score), 0.0),
-    ).join(Device, Device.device_id == Assessment.device_id)
-
-    if start_utc:
-        fin_query = fin_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) >= start_utc)
-    if end_utc:
-        fin_query = fin_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) < end_utc)
-
+    )
     financials = fin_query.first()
 
     total_refurb_val = float(financials[0]) if financials else 0.0
@@ -110,12 +102,7 @@ def get_dashboard_metrics():
     # Total Recovery Value derived from RecoveryAnalysis or Assessment pathways
     rec_val_query = db.session.query(
         func.coalesce(func.sum(RecoveryAnalysis.estimated_recovery_value), 0.0)
-    ).join(Device, Device.device_id == RecoveryAnalysis.device_id)
-    if start_utc:
-        rec_val_query = rec_val_query.filter(func.coalesce(Device.received_at, Device.created_at) >= start_utc)
-    if end_utc:
-        rec_val_query = rec_val_query.filter(func.coalesce(Device.received_at, Device.created_at) < end_utc)
-
+    )
     total_recovery_value = float(rec_val_query.scalar() or 0.0)
     if total_recovery_value == 0.0:
         fallback_query = db.session.query(
@@ -129,11 +116,7 @@ def get_dashboard_metrics():
                 ),
                 0.0,
             )
-        ).join(Device, Device.device_id == Assessment.device_id)
-        if start_utc:
-            fallback_query = fallback_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) >= start_utc)
-        if end_utc:
-            fallback_query = fallback_query.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) < end_utc)
+        )
         total_recovery_value = float(fallback_query.scalar() or 0.0)
 
     # Category averages
@@ -145,10 +128,6 @@ def get_dashboard_metrics():
             .join(Device, Device.device_id == Assessment.device_id)
             .filter(Device.device_type.ilike(f"%{cat}%"))
         )
-        if start_utc:
-            cat_q = cat_q.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) >= start_utc)
-        if end_utc:
-            cat_q = cat_q.filter(func.coalesce(Assessment.assessed_at, Assessment.created_at) < end_utc)
         avg = cat_q.scalar()
         cat_averages[cat] = round(float(avg or 0.0), 1)
 
@@ -256,7 +235,6 @@ def get_dashboard_metrics():
 
 
 @analytics_bp.route("/recovery-analysis", methods=["GET"])
-@require_internal_auth
 def get_recovery_analysis():
     """Retrieve aggregated recovery intelligence across all assessed devices with date filtering."""
     period = request.args.get("period", "").strip() or request.args.get("range", "").strip()

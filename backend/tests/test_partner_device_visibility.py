@@ -239,3 +239,50 @@ class PartnerDeviceVisibilityTests(unittest.TestCase):
             self.assertIn("Showing ${Math.min(5,devList.length)} of ${devList.length} incoming devices", content)
             # Live queue header count
             self.assertIn("devices awaiting assessment", content)
+
+    def test_09_dashboard_counts_unconstrained_by_period_and_accessible(self):
+        """Verify dashboard metrics are accessible anonymously and accurately reflect database counts with filters."""
+        # Unauthenticated request returns 200
+        anon_client = self.app.test_client()
+        resp_anon = anon_client.get("/api/v1/dashboard")
+        self.assertEqual(resp_anon.status_code, 200)
+        metrics = resp_anon.get_json()["metrics"]
+        self.assertEqual(metrics["incoming_devices"], 3)
+        self.assertEqual(metrics["pending_assessments"], 3)
+        self.assertEqual(metrics["refurbishment_candidates"], 0)
+
+        # Date filter 'This month' retains full database incoming devices count
+        resp_month = anon_client.get("/api/v1/dashboard?period=This%20month")
+        self.assertEqual(resp_month.status_code, 200)
+        metrics_month = resp_month.get_json()["metrics"]
+        self.assertEqual(metrics_month["incoming_devices"], 3)
+        self.assertEqual(metrics_month["pending_assessments"], 3)
+
+        # Create an assessment on one device
+        asm = Assessment(
+            assessment_id="ASM-TEST-DASH-01",
+            device_id="EW-2026-166CA51F",
+            repairability_score=85.0,
+            circular_recovery_score=80.0,
+            repair_cost=1500.0,
+            component_recovery_value=3000.0,
+            estimated_refurbished_value=12000.0,
+            recommendation="Refurbish",
+            co2_avoided_kg=15.0,
+            technical_summary="Device in good working condition.",
+        )
+        db.session.add(asm)
+        # Update device status
+        dev = Device.query.filter_by(device_id="EW-2026-166CA51F").first()
+        dev.status = "Refurbishment Recommended"
+        db.session.commit()
+
+        # Re-check metrics: Pending Assessments = 2 (remaining Received devices without assessment)
+        resp_updated = anon_client.get("/api/v1/dashboard")
+        self.assertEqual(resp_updated.status_code, 200)
+        upd_metrics = resp_updated.get_json()["metrics"]
+        self.assertEqual(upd_metrics["incoming_devices"], 3)
+        self.assertEqual(upd_metrics["pending_assessments"], 2)
+        self.assertEqual(upd_metrics["completed_assessments"], 1)
+        self.assertEqual(upd_metrics["refurbishment_candidates"], 1)
+        self.assertEqual(upd_metrics["total_recovery_value"], 12000.0)
