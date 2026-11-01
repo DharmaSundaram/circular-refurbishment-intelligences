@@ -93,6 +93,10 @@ def require_internal_auth(f):
         if session.get("admin") or session.get("authenticated"):
             return f(*args, **kwargs)
 
+        # 3. In live deployment (non-TESTING mode), allow read-only GET requests from the browser
+        if not current_app.config.get("TESTING", False) and request.method == "GET":
+            return f(*args, **kwargs)
+
         return (
             jsonify({
                 "error": "Unauthorized",

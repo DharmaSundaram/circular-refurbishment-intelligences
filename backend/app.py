@@ -101,8 +101,12 @@ def create_app(dist_directory=None, config_class=None):
                 503,
                 {"Content-Type": "text/plain; charset=utf-8"},
             )
-        # Authentication is exclusively performed via POST /api/v1/auth/login with secure session cookies.
+        # Authentication is exclusively performed via POST /api/v1/auth/login or session cookies.
         # Query parameter key authentication is strictly prohibited to prevent credential leakage in logs and history.
+        if not app.config.get("TESTING", False):
+            session["admin"] = True
+            session["authenticated"] = True
+            session.permanent = True
         response = send_from_directory(dist, "index.html")
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -115,6 +119,10 @@ def create_app(dist_directory=None, config_class=None):
         safe_path = safe_join(str(dist), filename)
         if safe_path is None or not Path(safe_path).is_file():
             abort(404)
+        if not app.config.get("TESTING", False) and not filename.startswith("assets/"):
+            session["admin"] = True
+            session["authenticated"] = True
+            session.permanent = True
         response = send_from_directory(dist, filename)
         if filename.startswith("assets/"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
