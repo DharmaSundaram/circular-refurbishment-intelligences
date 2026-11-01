@@ -232,6 +232,47 @@ def send_assessment_result():
         asm = Assessment.query.filter_by(device_id=device_id).first()
         if asm:
             assessment_id = asm.assessment_id
+        else:
+            # If device has not been assessed yet, perform deterministic assessment and persist
+            dev = Device.query.filter_by(device_id=device_id).first()
+            if dev:
+                results = evaluate_device_assessment(dev.to_dict())
+                assessment_id = f"ASM-{uuid.uuid4().hex[:8].upper()}"
+                asm = Assessment(
+                    assessment_id=assessment_id,
+                    device_id=device_id,
+                    repairability_score=float(results["repairability_score"]),
+                    circular_recovery_score=float(results["circular_recovery_score"]),
+                    repair_cost=float(results["repair_cost"]),
+                    component_recovery_value=float(results["component_recovery_value"]),
+                    estimated_refurbished_value=float(results["estimated_refurbished_value"]),
+                    co2_avoided_kg=float(results["co2_avoided_kg"]),
+                    recommendation=results["recommendation"],
+                    technical_summary=results["technical_summary"],
+                    assessor="Refurbishment Admin",
+                    assessed_at=datetime.now(timezone.utc),
+                )
+                db.session.add(asm)
+                for comp_data in results.get("components", []):
+                    comp = AssessmentComponent(
+                        assessment_id=assessment_id,
+                        component_name=comp_data["component_name"],
+                        condition=comp_data["condition"],
+                        recoverable=comp_data["recoverable"],
+                        estimated_value=float(comp_data["estimated_value"]),
+                        notes=comp_data.get("notes"),
+                    )
+                    db.session.add(comp)
+                rec = results["recommendation"]
+                if rec == "Refurbish":
+                    dev.status = "Refurbishment Recommended"
+                elif rec == "Parts Recovery":
+                    dev.status = "Parts Recovery Recommended"
+                elif rec == "Reject":
+                    dev.status = "Rejected"
+                else:
+                    dev.status = "Assessed"
+                db.session.commit()
 
     if not assessment_id:
         return jsonify({"error": "Bad Request", "message": "assessment_id or device_id is required"}), 400

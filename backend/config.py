@@ -187,8 +187,12 @@ class Config:
     if IS_PRODUCTION and not COLLECTION_API_URL:
         raise ValueError("COLLECTION_API_URL must be configured in production environment.")
 
-    # ADMIN_API_KEY: Optional admin key for privileged internal API calls
-    ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
+    # ADMIN_API_KEY: Privileged internal administrative API key
+    ADMIN_API_KEY = (
+        os.environ.get("ADMIN_API_KEY")
+        or os.environ.get("REFURBISHMENT_ADMIN_API_KEY")
+        or ""
+    ).strip() or None
 
     # Legacy CIRCULAR_API_KEY cannot override independent credentials in production
     if IS_PRODUCTION:
