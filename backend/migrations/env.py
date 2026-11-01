@@ -7,12 +7,13 @@ from alembic import context
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-config = context.config
-
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-fileConfig(config.config_file_name)
-logger = logging.getLogger('alembic.env')
+try:
+    config = context.config
+    fileConfig(config.config_file_name)
+    logger = logging.getLogger('alembic.env')
+except (AttributeError, Exception):
+    config = None
+    logger = logging.getLogger('alembic.env')
 
 
 def get_engine():
@@ -36,19 +37,27 @@ def get_engine_url():
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-config.set_main_option('sqlalchemy.url', get_engine_url())
-target_db = current_app.extensions['migrate'].db
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+if config is not None:
+    config.set_main_option('sqlalchemy.url', get_engine_url())
 
 
 def get_metadata():
-    if hasattr(target_db, 'metadatas'):
-        return target_db.metadatas[None]
-    return target_db.metadata
+    try:
+        target_db = current_app.extensions['migrate'].db
+        if hasattr(target_db, 'metadatas'):
+            return target_db.metadatas[None]
+        return target_db.metadata
+    except Exception:
+        return None
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """Ensure Alembic only inspects and manages the refurbishment schema,
+    preventing any accidental changes to collection or public schema tables.
+    """
+    if type_ == "table":
+        return object.schema == "refurbishment"
+    return True
 
 
 def run_migrations_offline():
@@ -65,7 +74,12 @@ def run_migrations_offline():
     """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url, target_metadata=get_metadata(), literal_binds=True
+        url=url,
+        target_metadata=get_metadata(),
+        literal_binds=True,
+        include_schemas=True,
+        include_object=include_object,
+        version_table_schema="refurbishment",
     )
 
     with context.begin_transaction():
@@ -101,6 +115,7 @@ def run_migrations_online():
             connection=connection,
             target_metadata=get_metadata(),
             include_schemas=True,
+            include_object=include_object,
             version_table_schema="refurbishment",
             **conf_args
         )
@@ -109,7 +124,8 @@ def run_migrations_online():
             context.run_migrations()
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+if config is not None:
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()

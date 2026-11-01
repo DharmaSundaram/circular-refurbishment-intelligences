@@ -148,6 +148,16 @@ def create_app(dist_directory=None, config_class=None):
             stamp()
             print(f"Refurbishment schema '{schema_name}' stamped at Alembic head.")
 
+    @app.cli.command("check-db")
+    def check_db_command():
+        """Execute read-only database connectivity and schema diagnostics."""
+        from scripts.db_diagnostic import run_database_diagnostic, print_diagnostic_report
+        uri = app.config.get("SQLALCHEMY_DATABASE_URI")
+        results = run_database_diagnostic(uri)
+        print_diagnostic_report(results)
+        if results["status"] not in ("PASS", "WARN"):
+            raise SystemExit(1)
+
     return app
 
 

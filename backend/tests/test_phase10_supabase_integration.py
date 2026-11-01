@@ -402,7 +402,15 @@ class Phase10IntegrationTests(unittest.TestCase):
         db.session.add_all([dev, asm, transfer])
         db.session.commit()
 
-        resp = self.client.post("/api/v1/transfers/TRF-OUT-RETRY-01/retry")
+        # Unauthenticated request -> 401
+        unauth_resp = self.client.post("/api/v1/transfers/TRF-OUT-RETRY-01/retry")
+        self.assertEqual(unauth_resp.status_code, 401)
+
+        # Authenticated request with ADMIN_API_KEY -> 200
+        resp = self.client.post(
+            "/api/v1/transfers/TRF-OUT-RETRY-01/retry",
+            headers={"X-API-Key": "test-admin-key-secret"},
+        )
         self.assertEqual(resp.status_code, 200)
 
         updated_trf = Transfer.query.filter_by(transfer_id="TRF-OUT-RETRY-01").first()

@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from pathlib import Path
 from sqlalchemy.pool import NullPool
 
@@ -13,6 +14,84 @@ try:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 except OSError:
     pass
+
+# Known Prisma/Node-specific query parameters that psycopg 3 rejects
+KNOWN_UNSUPPORTED_PSYCOPG_PARAMS = {
+    "pgbouncer",
+    "connection_limit",
+    "pool_timeout",
+    "schema",
+    "direct_connection",
+}
+
+# Common placeholder substrings that indicate unconfigured template credentials
+PLACEHOLDER_SUBSTRINGS = (
+    "projectref",
+    "[project-ref]",
+    "[project_ref]",
+    "<project-ref>",
+    "<project_ref>",
+    "[password]",
+    "[your-password]",
+    "<password>",
+    "your_strong_password",
+    "your-password",
+    "your-project-ref",
+)
+
+
+def normalize_and_validate_database_url(url: str, is_production: bool = False) -> str:
+    """Normalize PostgreSQL database URL for psycopg 3, strip invalid query parameters,
+    and detect unconfigured placeholder credentials.
+    """
+    if not url:
+        return url
+
+    # Scheme normalization for SQLAlchemy + psycopg 3
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    # Check for placeholder tokens (e.g. 'postgres.projectref')
+    url_lower = url.lower()
+    for placeholder in PLACEHOLDER_SUBSTRINGS:
+        if placeholder in url_lower:
+            msg = (
+                f"Invalid database connection URL: detected unconfigured placeholder token '{placeholder}' in "
+                "database connection string. Supabase pooler requires your actual project reference ID and password "
+                "(e.g., 'postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres' "
+                "or direct connection 'postgresql://postgres:[PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres'). "
+                "Please configure valid Supabase credentials in your Vercel Environment Variables."
+            )
+            if is_production:
+                raise ValueError(msg)
+
+    # Check for bracket characters that indicate unreplaced template tokens like [PASSWORD] or <PASSWORD>
+    if any(c in url for c in ("[", "]", "<", ">")):
+        msg = (
+            "Invalid database connection URL: detected unreplaced bracketed token in connection string. "
+            "Ensure tokens like '[PASSWORD]' or '<PROJECT-REF>' are replaced with actual values."
+        )
+        if is_production:
+            raise ValueError(msg)
+
+    # Query parameter sanitization: strip Prisma/PgBouncer query parameters that psycopg 3 strictly rejects
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.query:
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            sanitized_pairs = [
+                (k, v) for k, v in query_pairs if k.lower() not in KNOWN_UNSUPPORTED_PSYCOPG_PARAMS
+            ]
+            clean_query = urllib.parse.urlencode(sanitized_pairs)
+            url = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, clean_query, parsed.fragment)
+            )
+    except Exception:
+        pass
+
+    return url
 
 
 class Config:
@@ -40,19 +119,14 @@ class Config:
     DB_SCHEMA = os.environ.get("DB_SCHEMA", "refurbishment")
 
     # Supabase / PostgreSQL database configuration
-    _db_url = (
+    _raw_db_url = (
         os.environ.get("SUPABASE_DB_URL")
         or os.environ.get("DATABASE_URL")
         or os.environ.get("POSTGRES_URL")
     )
 
-    if _db_url:
-        if _db_url.startswith("postgres://"):
-            _db_url = _db_url.replace("postgres://", "postgresql://", 1)
-        # Ensure psycopg driver is selected if generic postgresql:// specified
-        if _db_url.startswith("postgresql://") and not _db_url.startswith("postgresql+"):
-            _db_url = _db_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
+    if _raw_db_url:
+        _db_url = normalize_and_validate_database_url(_raw_db_url, is_production=IS_PRODUCTION)
         SQLALCHEMY_DATABASE_URI = _db_url
 
         # Serverless-compatible engine configuration

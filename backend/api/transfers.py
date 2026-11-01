@@ -3,11 +3,13 @@
 from flask import Blueprint, jsonify, request
 from models.transfer import Transfer
 from services.callback_service import retry_partner_transfer
+from api.auth import require_internal_auth
 
 transfers_bp = Blueprint("transfers", __name__, url_prefix="/api/v1")
 
 
 @transfers_bp.route("/transfers", methods=["GET"])
+@require_internal_auth
 def list_transfers():
     """List transfers ordered by creation time descending."""
     direction = request.args.get("direction")
@@ -24,6 +26,7 @@ def list_transfers():
 
 
 @transfers_bp.route("/transfers/<transfer_id>", methods=["GET"])
+@require_internal_auth
 def get_transfer_detail(transfer_id):
     """Retrieve detailed information for a single transfer."""
     transfer = Transfer.query.filter_by(transfer_id=transfer_id).first()
@@ -34,6 +37,7 @@ def get_transfer_detail(transfer_id):
 
 
 @transfers_bp.route("/transfers/<transfer_id>/retry", methods=["POST"])
+@require_internal_auth
 def retry_transfer(transfer_id):
     """Retry an outbound transfer to the Collection Application."""
     success, http_code, message, transfer = retry_partner_transfer(transfer_id)
