@@ -214,11 +214,17 @@ def receive_incoming_device():
 @devices_bp.route("/devices", methods=["GET"])
 @require_internal_auth
 def list_devices():
-    """List devices with optional filtering by status, condition, type, and search term."""
+    """List devices from refurbishment.devices with optional filtering and pagination.
+
+    Returns all devices in the refurbishment schema unless explicit pagination is requested.
+    Devices with status 'Received' are always included by default.
+    """
     search_q = request.args.get("search", "").strip().lower()
     status_filter = request.args.get("status", "").strip()
     condition_filter = request.args.get("condition", "").strip()
     type_filter = request.args.get("type", "").strip()
+    limit = request.args.get("limit", type=int)
+    page = request.args.get("page", type=int)
 
     query = Device.query
 
@@ -242,10 +248,25 @@ def list_devices():
     if type_filter:
         query = query.filter_by(device_type=type_filter)
 
-    devices = query.order_by(Device.received_at.desc()).all()
+    total_count = query.count()
+
+    order_clauses = [
+        Device.received_at.desc().nullslast(),
+        Device.created_at.desc().nullslast(),
+        Device.device_id.desc(),
+    ]
+    query = query.order_by(*order_clauses)
+
+    if limit is not None and limit > 0:
+        offset = ((page - 1) * limit) if page and page > 0 else 0
+        devices = query.offset(offset).limit(limit).all()
+    else:
+        devices = query.all()
+
     return jsonify({
         "devices": [d.to_dict() for d in devices],
-        "total": len(devices),
+        "total": total_count,
+        "count": len(devices),
     })
 
 
@@ -272,7 +293,10 @@ def get_assessment_queue():
     """Retrieve queue of devices awaiting technical evaluation."""
     pending_devices = Device.query.filter(
         Device.status.in_(["Received", "Queued", "Assessing", "Pending"])
-    ).order_by(Device.received_at.asc()).all()
+    ).order_by(
+        Device.received_at.asc().nullslast(),
+        Device.created_at.asc().nullslast(),
+    ).all()
 
     return jsonify({
         "queue": [d.to_dict() for d in pending_devices],
