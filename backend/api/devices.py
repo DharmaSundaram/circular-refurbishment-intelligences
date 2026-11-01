@@ -23,6 +23,8 @@ devices_bp = Blueprint("devices", __name__, url_prefix="/api/v1")
 
 @devices_bp.route("/refurbishment/devices", methods=["POST"])
 @devices_bp.route("/devices/receive", methods=["POST"])
+@devices_bp.route("/devices/incoming", methods=["POST"])
+@devices_bp.route("/incoming", methods=["POST"])
 @require_partner_inbound_api_key
 def receive_incoming_device():
     """Ingest structured incoming device data from partner Collection Application."""
@@ -35,7 +37,7 @@ def receive_incoming_device():
 
     device_id = data.get("device_id")
     transfer_id = data.get("transfer_id")
-    device_info = data.get("device")
+    device_info = data.get("device") if isinstance(data.get("device"), dict) else data
 
     if not device_id or not str(device_id).strip():
         return jsonify({"error": "Bad Request", "message": "Missing required field: device_id"}), 400
