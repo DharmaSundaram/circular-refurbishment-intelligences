@@ -48,10 +48,21 @@ def send_assessment_result_to_collection(
 
     transfer_id = f"TRF-OUT-{uuid.uuid4().hex[:8].upper()}"
     collection_url = current_app.config.get("COLLECTION_API_URL", "").rstrip("/")
-    api_key = current_app.config.get("COLLECTION_API_KEY", "")
+    api_key = (
+        current_app.config.get("COLLECTION_API_KEY")
+        or current_app.config.get("CIRCULAR_API_KEY")
+        or ""
+    ).strip()
 
     clean_col_url = collection_url.rstrip("/")
-    if clean_col_url.endswith("/api/v1/assessment-results") or clean_col_url.endswith("/api/v1/collection/assessments"):
+    if (
+        clean_col_url.endswith("/api/v1/assessment-results")
+        or clean_col_url.endswith("/api/v1/collection/assessments")
+        or clean_col_url.endswith("/api/assessment-results")
+        or clean_col_url.endswith("/api/collection/assessments")
+        or clean_col_url.endswith("/assessment-results")
+        or clean_col_url.endswith("/collection/assessments")
+    ):
         endpoint = clean_col_url
     elif clean_col_url.endswith("/api/v1"):
         endpoint = f"{clean_col_url}/assessment-results"
@@ -214,7 +225,11 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
         return False, 400, "Only outbound transfers can be retried", transfer
 
     collection_url = current_app.config.get("COLLECTION_API_URL", "").rstrip("/")
-    api_key = current_app.config.get("COLLECTION_API_KEY", "")
+    api_key = (
+        current_app.config.get("COLLECTION_API_KEY")
+        or current_app.config.get("CIRCULAR_API_KEY")
+        or ""
+    ).strip()
 
     endpoint = transfer.endpoint or (f"{collection_url}/api/v1/assessment-results" if collection_url else "")
     if not endpoint or endpoint.startswith("/"):

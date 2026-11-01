@@ -180,7 +180,11 @@ class Config:
         raise ValueError("PARTNER_INBOUND_API_KEY must be configured in production environment.")
 
     # COLLECTION_API_KEY: Authenticates outgoing assessment callbacks to Collection
-    COLLECTION_API_KEY = os.environ.get("COLLECTION_API_KEY")
+    COLLECTION_API_KEY = (
+        os.environ.get("COLLECTION_API_KEY")
+        or os.environ.get("CIRCULAR_API_KEY")
+        or ""
+    ).strip()
     if IS_PRODUCTION and not COLLECTION_API_KEY:
         raise ValueError("COLLECTION_API_KEY must be configured in production environment.")
 

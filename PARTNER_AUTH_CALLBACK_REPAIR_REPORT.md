@@ -137,3 +137,4 @@ To ensure proper production operation on Vercel:
 4. `COLLECTION_API_KEY`: Configured to the outbound callback authentication key accepted by Collection.
 5. `FLASK_SECRET_KEY`: Set to a strong secret for secure signing of session cookies.
 6. Push changes to GitHub repository branch `main` to trigger Vercel deployment.
+
