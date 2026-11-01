@@ -105,8 +105,8 @@ class PartnerDeviceVisibilityTests(unittest.TestCase):
 
         db.session.commit()
 
-        # Establish authenticated session
-        self.client.get("/")
+        # Establish authenticated session via admin login
+        self.client.post("/api/v1/auth/login", json={"admin_key": "test-admin-key-secret"})
 
     def tearDown(self):
         db.session.remove()

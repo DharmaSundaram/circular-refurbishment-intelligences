@@ -72,6 +72,7 @@ def receive_incoming_device():
                 if "persisted" not in cached_resp:
                     cached_resp["persisted"] = True
                 cached_resp["idempotent"] = True
+                cached_resp["duplicate"] = True
             return jsonify(cached_resp), 200
         except Exception:
             return jsonify({
@@ -81,6 +82,7 @@ def receive_incoming_device():
                 "transfer_id": transfer_id,
                 "persisted": True,
                 "idempotent": True,
+                "duplicate": True,
             }), 200
 
     # Duplicate prevention: Check if device already exists with another transfer ID
@@ -96,6 +98,7 @@ def receive_incoming_device():
                     "received_at": existing_device.received_at.isoformat() if existing_device.received_at else None,
                     "persisted": True,
                     "idempotent": True,
+                    "duplicate": True,
                 }),
                 200,
             )

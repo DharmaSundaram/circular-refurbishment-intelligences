@@ -119,12 +119,16 @@ def admin_login():
     admin_key = current_app.config.get("ADMIN_API_KEY")
     is_production = current_app.config.get("IS_PRODUCTION", False)
 
+    if not key:
+        return jsonify({"error": "Unauthorized", "message": "Missing administrator credentials"}), 401
+
     if is_production:
         if not admin_key or key != admin_key:
             return jsonify({"error": "Unauthorized", "message": "Invalid administrator credentials"}), 401
     else:
         dev_key = current_app.config.get("CIRCULAR_API_KEY")
-        if admin_key and key != admin_key and key != dev_key:
+        expected_keys = [k for k in (admin_key, dev_key) if k]
+        if not expected_keys or key not in expected_keys:
             return jsonify({"error": "Unauthorized", "message": "Invalid administrator credentials"}), 401
 
     session["admin"] = True

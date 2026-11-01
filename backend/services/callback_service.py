@@ -129,8 +129,20 @@ def send_assessment_result_to_collection(
         http_status = resp.status_code
         resp_text = resp.text
         is_success = 200 <= http_status < 300
-        transfer_status = "Completed" if is_success else "Failed"
         error_msg = None if is_success else f"HTTP error {http_status}"
+        if is_success and resp_text:
+            try:
+                resp_json = resp.json()
+                if isinstance(resp_json, dict):
+                    if resp_json.get("success") is False:
+                        is_success = False
+                        error_msg = resp_json.get("error") or resp_json.get("message") or "Upstream returned success: false"
+                    elif "error" in resp_json and resp_json.get("error"):
+                        is_success = False
+                        error_msg = str(resp_json.get("error"))
+            except Exception:
+                pass
+        transfer_status = "Completed" if is_success else "Failed"
     else:
         http_status = 503
         resp_text = None
@@ -199,8 +211,21 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
         transfer.http_status = resp.status_code
         transfer.response_payload = resp.text
         is_success = 200 <= resp.status_code < 300
+        error_msg = None if is_success else f"HTTP error {resp.status_code}"
+        if is_success and resp.text:
+            try:
+                resp_json = resp.json()
+                if isinstance(resp_json, dict):
+                    if resp_json.get("success") is False:
+                        is_success = False
+                        error_msg = resp_json.get("error") or resp_json.get("message") or "Upstream returned success: false"
+                    elif "error" in resp_json and resp_json.get("error"):
+                        is_success = False
+                        error_msg = str(resp_json.get("error"))
+            except Exception:
+                pass
         transfer.status = "Completed" if is_success else "Failed"
-        transfer.error_message = None if is_success else f"HTTP error {resp.status_code}"
+        transfer.error_message = error_msg
         transfer.updated_at = datetime.now(timezone.utc)
 
         # Mark device completed if successful

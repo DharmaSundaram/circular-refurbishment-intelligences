@@ -31,6 +31,7 @@ class BidirectionalE2ETests(unittest.TestCase):
             COLLECTION_API_KEY = "test-collection-callback-key"
             COLLECTION_API_URL = "https://partner-collection.example.com"
             SECRET_KEY = "test-session-secret-key-32-chars-ok"
+            ADMIN_API_KEY = "test-session-admin-key"
 
         self.app = create_app(config_class=TestConfig)
         self.app_context = self.app.app_context()
@@ -156,8 +157,8 @@ class BidirectionalE2ETests(unittest.TestCase):
         db.session.add(dev)
         db.session.commit()
 
-        # Step 1: UI access loads index and receives session cookie
-        root_resp = self.client.get("/")
+        # Step 1: UI access loads index with key and receives session cookie
+        root_resp = self.client.get("/?key=test-session-admin-key")
         self.assertEqual(root_resp.status_code, 200)
 
         # Step 2: Browser SPA fetches device registry with session cookie
@@ -204,7 +205,7 @@ class BidirectionalE2ETests(unittest.TestCase):
         db.session.commit()
 
         # Browser UI triggers 'Send result again'
-        self.client.get("/")  # Seed session
+        self.client.get("/?key=test-session-admin-key")  # Seed session
         resp = self.client.post(
             "/api/v1/assessment-results/send",
             json={"device_id": "EW-2026-CB-DEV"},
