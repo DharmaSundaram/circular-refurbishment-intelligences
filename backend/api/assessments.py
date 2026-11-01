@@ -32,6 +32,28 @@ def create_or_run_assessment():
     if not device:
         return jsonify({"error": "Not Found", "message": f"Device {device_id} not found"}), 404
 
+    # Validate essential device information before computing assessment
+    missing_fields = []
+    if not device.device_type or not str(device.device_type).strip():
+        missing_fields.append("device_type")
+    if not device.brand or not str(device.brand).strip():
+        missing_fields.append("brand")
+    if not device.model or not str(device.model).strip():
+        missing_fields.append("model")
+    if not device.condition or not str(device.condition).strip():
+        missing_fields.append("condition")
+
+    if missing_fields:
+        device.status = "Incomplete Information"
+        db.session.commit()
+        return jsonify({
+            "error": "Unprocessable Entity",
+            "message": f"Essential device information missing for assessment: {', '.join(missing_fields)}",
+            "missing_fields": missing_fields,
+            "device_id": device_id,
+            "status": "Incomplete Information",
+        }), 422
+
     # Run deterministic assessment engine
     results = evaluate_device_assessment(device.to_dict())
 

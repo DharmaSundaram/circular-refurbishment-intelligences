@@ -1,7 +1,7 @@
 """Assessment API endpoints for initiating, calculating, retrieving, and dispatching assessments."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, current_app
 
 from extensions import db
@@ -11,13 +11,15 @@ from models.recovery import RecoveryAnalysis
 from models.report import Report
 from services.assessment_engine import evaluate_device_assessment
 from services.callback_service import send_assessment_result_to_collection
+from api.auth import require_internal_auth
 
 assessments_bp = Blueprint("assessments", __name__, url_prefix="/api/v1")
 
 
 @assessments_bp.route("/assessments", methods=["POST"])
+@require_internal_auth
 def create_or_run_assessment():
-    """Create and compute a deterministic assessment for a device."""
+    """Create, evaluate, and persist a deterministic assessment, then initiate automatic partner callback."""
     if not request.is_json:
         return jsonify({"error": "Bad Request", "message": "JSON body required"}), 400
 
@@ -29,6 +31,28 @@ def create_or_run_assessment():
     device = Device.query.filter_by(device_id=device_id).first()
     if not device:
         return jsonify({"error": "Not Found", "message": f"Device {device_id} not found"}), 404
+
+    # Validate essential device information before computing assessment
+    missing_fields = []
+    if not device.device_type or not str(device.device_type).strip():
+        missing_fields.append("device_type")
+    if not device.brand or not str(device.brand).strip():
+        missing_fields.append("brand")
+    if not device.model or not str(device.model).strip():
+        missing_fields.append("model")
+    if not device.condition or not str(device.condition).strip():
+        missing_fields.append("condition")
+
+    if missing_fields:
+        device.status = "Incomplete Information"
+        db.session.commit()
+        return jsonify({
+            "error": "Unprocessable Entity",
+            "message": f"Essential device information missing for assessment: {', '.join(missing_fields)}",
+            "missing_fields": missing_fields,
+            "device_id": device_id,
+            "status": "Incomplete Information",
+        }), 422
 
     # Run deterministic assessment engine
     results = evaluate_device_assessment(device.to_dict())
@@ -61,7 +85,7 @@ def create_or_run_assessment():
                 recommendation=recommendation,
                 technical_summary=technical_summary,
                 assessor=assessor,
-                assessed_at=datetime.utcnow(),
+                assessed_at=datetime.now(timezone.utc),
             )
             db.session.add(assessment)
         else:
@@ -74,7 +98,7 @@ def create_or_run_assessment():
             assessment.recommendation = recommendation
             assessment.technical_summary = technical_summary
             assessment.assessor = assessor
-            assessment.assessed_at = datetime.utcnow()
+            assessment.assessed_at = datetime.now(timezone.utc)
             # Clear old components
             AssessmentComponent.query.filter_by(assessment_id=assessment.assessment_id).delete()
 
@@ -116,13 +140,15 @@ def create_or_run_assessment():
             rec_analysis.recovery_path = recommendation
             rec_analysis.analysis_summary = technical_summary
 
-        # Update Device status
+        # Update Device status based on recommendation
         if recommendation == "Refurbish":
             device.status = "Refurbishment Recommended"
         elif recommendation == "Parts Recovery":
             device.status = "Parts Recovery Recommended"
         elif recommendation == "Reject":
             device.status = "Rejected"
+        elif recommendation == "Recycle":
+            device.status = "Assessed"
         else:
             device.status = "Assessed"
 
@@ -138,15 +164,32 @@ def create_or_run_assessment():
             )
             db.session.add(rep)
 
+        # PERSIST ASSESSMENT BEFORE CALLBACK (Requirement: Do not lose assessment if callback fails)
         db.session.commit()
+
+        # AUTOMATIC ASSESSMENT CALLBACK (Phase 6 Requirement)
+        callback_success, callback_code, callback_msg, transfer = send_assessment_result_to_collection(
+            assessment.assessment_id
+        )
 
         resp_dict = assessment.to_dict()
         resp_dict["reasons"] = results.get("reasons", [])
-        return jsonify({
-            "status": "success",
-            "message": "Assessment evaluated and stored",
-            "assessment": resp_dict,
-        }), 201
+
+        return (
+            jsonify({
+                "status": "success",
+                "message": "Assessment evaluated and stored",
+                "assessment": resp_dict,
+                "callback": {
+                    "attempted": True,
+                    "success": callback_success,
+                    "status_code": callback_code,
+                    "message": callback_msg,
+                    "transfer_id": transfer.transfer_id if transfer else None,
+                },
+            }),
+            201,
+        )
 
     except Exception as e:
         db.session.rollback()
@@ -155,6 +198,7 @@ def create_or_run_assessment():
 
 
 @assessments_bp.route("/assessments/<assessment_id>", methods=["GET"])
+@require_internal_auth
 def get_assessment(assessment_id):
     """Retrieve an assessment by ID."""
     assessment = Assessment.query.filter_by(assessment_id=assessment_id).first()
@@ -165,6 +209,7 @@ def get_assessment(assessment_id):
 
 
 @assessments_bp.route("/assessments/device/<device_id>", methods=["GET"])
+@require_internal_auth
 def get_device_assessment(device_id):
     """Retrieve an assessment by device ID."""
     assessment = Assessment.query.filter_by(device_id=device_id).first()
@@ -176,8 +221,9 @@ def get_device_assessment(device_id):
 
 @assessments_bp.route("/assessment-results/send", methods=["POST"])
 @assessments_bp.route("/assessments/send", methods=["POST"])
+@require_internal_auth
 def send_assessment_result():
-    """Dispatch assessment result callback to the Collection Application."""
+    """Manually re-dispatch or trigger assessment result callback to the Collection Application."""
     data = request.get_json(silent=True) or {}
     assessment_id = data.get("assessment_id")
     device_id = data.get("device_id")
@@ -190,20 +236,19 @@ def send_assessment_result():
     if not assessment_id:
         return jsonify({"error": "Bad Request", "message": "assessment_id or device_id is required"}), 400
 
-    success, http_code, message, transfer = send_assessment_result_to_collection(assessment_id)
-
-    # If successfully delivered, mark device as Completed
-    if success:
-        asm = Assessment.query.filter_by(assessment_id=assessment_id).first()
-        if asm and asm.device:
-            asm.device.status = "Completed"
-            db.session.commit()
+    force = bool(data.get("force_resend", False) or data.get("force", False) or data.get("retry", False))
+    success, http_code, message, transfer = send_assessment_result_to_collection(
+        assessment_id, force_resend=force
+    )
 
     response_status = 200 if success else (http_code if http_code and http_code > 0 else 503)
 
-    return jsonify({
-        "success": success,
-        "http_status": http_code,
-        "message": message,
-        "transfer_id": transfer.transfer_id if transfer else None,
-    }), response_status
+    return (
+        jsonify({
+            "success": success,
+            "http_status": http_code,
+            "message": message,
+            "transfer_id": transfer.transfer_id if transfer else None,
+        }),
+        response_status,
+    )

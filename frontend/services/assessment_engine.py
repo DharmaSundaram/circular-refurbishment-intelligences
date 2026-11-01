@@ -1,13 +1,16 @@
-"""Deterministic and explainable Assessment Engine for Refurbishment Intelligence.
+"""Deterministic, explainable, and rule-based Assessment Engine for Refurbishment Intelligence.
 
 Calculates:
+- Technical condition score (0-100)
+- Age score (0-100)
 - Repairability score (0-100)
 - Circular recovery score (0-100)
-- Repair cost (INR)
-- Component recovery values and component breakdown
+- Estimated repair cost (INR)
+- Component recovery values and itemized component breakdown
 - Estimated refurbished value (INR)
 - Avoided CO2 emissions (kg)
-- Recommendation: Refurbish, Parts Recovery, Recycle, Reject
+- Confidence level
+- Recommended recovery decision: Refurbish, Parts Recovery, Recycle, Reject
 - Transparent technical summary & bullet reasons
 """
 
@@ -15,7 +18,7 @@ from typing import Dict, Any, List, Tuple
 
 
 def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Run transparent, deterministic assessment algorithm on device attributes."""
+    """Run transparent, deterministic rule-based assessment algorithm on device attributes."""
     dtype = (device_dict.get("device_type") or device_dict.get("type") or "Laptop").strip().title()
     brand = (device_dict.get("brand") or "").strip().title()
     model = (device_dict.get("model") or device_dict.get("name") or "").strip()
@@ -24,8 +27,8 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     screen_cond = (device_dict.get("screen_condition") or "Good").strip()
     battery_cond = (device_dict.get("battery_condition") or "Fair").strip()
     damage_desc = (device_dict.get("damage_description") or "").lower()
-    
-    # Parse age
+
+    # Parse age in years
     age_raw = device_dict.get("age", 3)
     try:
         if isinstance(age_raw, str):
@@ -35,82 +38,130 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         age_years = 3
 
-    # Parse weight
-    weight_kg = float(device_dict.get("weight_kg") or 1.5)
-    if weight_kg <= 0:
+    # Parse weight in kg
+    try:
+        weight_kg = float(device_dict.get("weight_kg") or 1.5)
+        if weight_kg <= 0:
+            weight_kg = 1.5
+    except (ValueError, TypeError):
         weight_kg = 1.5
 
     # ---------------------------------------------------------
-    # 1. REPAIRABILITY SCORE (0 - 100)
+    # 1. TECHNICAL CONDITION SCORE (0 - 100)
     # ---------------------------------------------------------
-    score = 0.0
+    # Evaluates physical and functional hardware health
+    tech_score = 0.0
 
-    # Condition base (35 max)
+    # Physical condition base (35 max)
     cond_lower = condition.lower()
     if "good" in cond_lower or "excellent" in cond_lower:
-        score += 35.0
+        tech_score += 35.0
     elif "fair" in cond_lower or "moderate" in cond_lower:
-        score += 26.0
+        tech_score += 26.0
     elif "damaged" in cond_lower:
-        score += 16.0
+        tech_score += 16.0
     else:  # "not working", "poor", etc.
-        score += 8.0
+        tech_score += 8.0
 
-    # Power status (25 max)
+    # Power status base (30 max)
     power_lower = power_status.lower()
     if "on" in power_lower or "powers on" in power_lower or "working" in power_lower:
-        score += 25.0
+        tech_score += 30.0
     elif "intermittent" in power_lower:
-        score += 12.0
-    else:
-        score += 2.0
+        tech_score += 15.0
+    else:  # "no power", "off", "dead"
+        tech_score += 4.0
 
-    # Screen condition (20 max)
+    # Screen condition base (20 max)
     screen_lower = screen_cond.lower()
     if "good" in screen_lower or "perfect" in screen_lower or "none" in screen_lower:
-        score += 20.0
+        tech_score += 20.0
     elif "scratch" in screen_lower or "minor" in screen_lower or "fair" in screen_lower:
-        score += 15.0
+        tech_score += 15.0
     elif "cracked" in screen_lower:
-        score += 6.0
-    else:  # Broken / dead screen
-        score += 2.0
+        tech_score += 6.0
+    else:  # Broken / dead display
+        tech_score += 2.0
 
-    # Battery condition (10 max)
+    # Battery condition base (15 max)
     battery_lower = battery_cond.lower()
     if "good" in battery_lower or "healthy" in battery_lower or "excellent" in battery_lower:
-        score += 10.0
+        tech_score += 15.0
     elif "fair" in battery_lower or "moderate" in battery_lower:
-        score += 7.0
+        tech_score += 10.0
     elif "poor" in battery_lower or "worn" in battery_lower or "%" in battery_lower:
-        score += 4.0
-    else:
-        score += 1.0
+        tech_score += 5.0
+    else:  # dead / missing
+        tech_score += 1.0
 
-    # Age impact (10 max)
-    if age_years <= 1:
-        score += 10.0
-    elif age_years <= 2:
-        score += 8.0
-    elif age_years <= 3:
-        score += 6.0
-    elif age_years <= 4:
-        score += 4.0
-    else:
-        score += 2.0
-
-    # Damage description penalties
+    # Damage description deductions
     if "liquid" in damage_desc or "water" in damage_desc:
-        score -= 20.0
+        tech_score -= 20.0
     if "corrosion" in damage_desc or "burn" in damage_desc:
-        score -= 15.0
+        tech_score -= 15.0
     if "broken hinge" in damage_desc or "dent" in damage_desc:
-        score -= 5.0
+        tech_score -= 5.0
 
-    repairability_score = max(5.0, min(100.0, score))
+    technical_condition_score = round(max(5.0, min(100.0, tech_score)), 1)
 
     # ---------------------------------------------------------
-    # 2. COMPONENT RECOVERY BREAKDOWN & VALUES
+    # 2. AGE SCORE (0 - 100)
+    # ---------------------------------------------------------
+    # Evaluates component depreciation and generational obsolescence
+    age_score = round(max(10.0, min(100.0, 100.0 - (age_years * 14.0))), 1)
+
+    # ---------------------------------------------------------
+    # 3. REPAIRABILITY SCORE (0 - 100)
+    # ---------------------------------------------------------
+    # Weighted synthesis of Technical Condition (50%), Age (25%), Modularity Index (25%)
+    if "laptop" in dtype.lower():
+        modularity = 90.0
+    elif "tablet" in dtype.lower():
+        modularity = 65.0
+    elif "smart" in dtype.lower() or "phone" in dtype.lower():
+        modularity = 70.0
+    elif "monitor" in dtype.lower() or "display" in dtype.lower():
+        modularity = 85.0
+    else:
+        modularity = 75.0
+
+    repairability_raw = (technical_condition_score * 0.50) + (age_score * 0.25) + (modularity * 0.25)
+    repairability_score = round(max(5.0, min(100.0, repairability_raw)), 1)
+
+    # ---------------------------------------------------------
+    # 4. CONFIDENCE LEVEL
+    # ---------------------------------------------------------
+    verified_fields = 0
+    total_fields = 9
+    if device_dict.get("device_type") or device_dict.get("type"):
+        verified_fields += 1
+    if device_dict.get("brand"):
+        verified_fields += 1
+    if device_dict.get("model") or device_dict.get("name"):
+        verified_fields += 1
+    if device_dict.get("condition"):
+        verified_fields += 1
+    if device_dict.get("power_status"):
+        verified_fields += 1
+    if device_dict.get("screen_condition"):
+        verified_fields += 1
+    if device_dict.get("battery_condition"):
+        verified_fields += 1
+    if device_dict.get("age") is not None or device_dict.get("purchase_year") is not None:
+        verified_fields += 1
+    if device_dict.get("weight_kg") is not None and float(device_dict.get("weight_kg") or 0) > 0:
+        verified_fields += 1
+
+    ratio = verified_fields / total_fields
+    if ratio >= 0.90:
+        confidence_level = f"High ({int(ratio * 100)}%)"
+    elif ratio >= 0.70:
+        confidence_level = f"Medium ({int(ratio * 100)}%)"
+    else:
+        confidence_level = f"Moderate ({int(ratio * 100)}%)"
+
+    # ---------------------------------------------------------
+    # 5. COMPONENT RECOVERY BREAKDOWN & VALUES
     # ---------------------------------------------------------
     components = []
     if "laptop" in dtype.lower():
@@ -237,12 +288,20 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
             "estimated_value": 900.0,
             "notes": "Ergonomic base stand assembly",
         })
-    else:
+    else:  # Tablets & other generic electronics
+        disp_ok = "cracked" not in screen_lower and "broken" not in screen_lower
+        components.append({
+            "component_name": "Touch Display Assembly",
+            "condition": "Good" if disp_ok else "Damaged",
+            "recoverable": disp_ok,
+            "estimated_value": 2000.0 if disp_ok else 400.0,
+            "notes": "Digitizer glass & panel",
+        })
         components.append({
             "component_name": "Core Electronics",
             "condition": "Fair",
             "recoverable": True,
-            "estimated_value": 2000.0,
+            "estimated_value": 1600.0,
             "notes": "Reusable sub-assemblies",
         })
         components.append({
@@ -256,9 +315,8 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     component_recovery_value = sum(c["estimated_value"] for c in components if c["recoverable"])
 
     # ---------------------------------------------------------
-    # 3. REPAIR COST ESTIMATE
+    # 6. REPAIR COST ESTIMATE (INR)
     # ---------------------------------------------------------
-    # Category base labour & diagnostics
     if "laptop" in dtype.lower():
         base_repair = 3200.0
     elif "smart" in dtype.lower() or "phone" in dtype.lower():
@@ -268,12 +326,11 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     else:
         base_repair = 2000.0
 
-    # Parts replacement cost add-ons
     parts_cost = 0.0
     if "cracked" in screen_lower or "broken" in screen_lower:
         parts_cost += 3400.0
     elif "minor" in screen_lower or "scratch" in screen_lower:
-        parts_cost += 400.0  # Buffing / polish / protector
+        parts_cost += 400.0
 
     if "poor" in battery_lower or "worn" in battery_lower or "%" in battery_lower:
         parts_cost += 1800.0
@@ -287,9 +344,8 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     repair_cost = round(base_repair + parts_cost, 2)
 
     # ---------------------------------------------------------
-    # 4. ESTIMATED REFURBISHED VALUE
+    # 7. ESTIMATED REFURBISHED VALUE (INR)
     # ---------------------------------------------------------
-    # Base refurbished market price for this device category
     if "laptop" in dtype.lower():
         base_refurb = 28000.0
         if "apple" in brand.lower():
@@ -312,10 +368,8 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     estimated_refurbished_value = round(base_refurb * deprec, 2)
 
     # ---------------------------------------------------------
-    # 5. CIRCULAR RECOVERY SCORE (0 - 100)
+    # 8. CIRCULAR RECOVERY SCORE (0 - 100)
     # ---------------------------------------------------------
-    # Combines repairability (40%), component recoverability ratio (35%),
-    # condition factor (15%), and economic net margin (10%)
     recoverable_ratio = component_recovery_value / max(1.0, sum(c["estimated_value"] for c in components))
     margin_ratio = max(0.0, min(1.0, (estimated_refurbished_value - repair_cost) / max(1.0, estimated_refurbished_value)))
 
@@ -328,14 +382,12 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
     circular_recovery_score = round(max(5.0, min(100.0, circular_score)), 1)
 
     # ---------------------------------------------------------
-    # 6. AVOIDED CO2 EMISSIONS (kg)
+    # 9. AVOIDED CO2 EMISSIONS (kg)
     # ---------------------------------------------------------
-    # Manufacturing footprint of ICT hardware is ~12-16 kg CO2e per kg product weight.
-    # Extending device life avoids approximately 80% of embodied manufacturing carbon.
     if repairability_score >= 68.0:
         co2_factor = 12.8  # Refurbish extends life
     elif repairability_score >= 45.0:
-        co2_factor = 7.4   # Component harvesting avoids new component manufacture
+        co2_factor = 7.4   # Component harvesting avoids new manufacture
     else:
         co2_factor = 2.5   # Raw material recycling
     
@@ -344,7 +396,7 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
         co2_avoided_kg = 1.5
 
     # ---------------------------------------------------------
-    # 7. RECOMMENDATION DECISION
+    # 10. RECOMMENDATION DECISION
     # ---------------------------------------------------------
     reasons = []
     economic_margin = estimated_refurbished_value - repair_cost
@@ -376,20 +428,27 @@ def evaluate_device_assessment(device_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     technical_summary = (
         f"{dtype} ({brand} {model}) presented in {condition.lower()} condition with {power_status.lower()} power state. "
-        f"Multi-factor analysis yields a repairability score of {repairability_score:.0f}/100 and circular recovery score "
-        f"of {circular_recovery_score:.0f}/100. Component recovery value estimated at ₹{component_recovery_value:,.0f} across "
+        f"Multi-factor analysis yields a technical condition score of {technical_condition_score:.0f}/100, "
+        f"repairability score of {repairability_score:.0f}/100, and circular recovery score of {circular_recovery_score:.0f}/100. "
+        f"Component recovery value estimated at ₹{component_recovery_value:,.0f} across "
         f"{len([c for c in components if c['recoverable']])} reusable sub-systems. Estimated avoided emissions: {co2_avoided_kg:.1f} kg CO2e. "
-        f"Recommended pathway: {recommendation}."
+        f"Recommended pathway: {recommendation} (Confidence: {confidence_level})."
     )
 
     return {
-        "repairability_score": round(repairability_score, 1),
+        "technical_condition_score": technical_condition_score,
+        "age_score": age_score,
+        "repairability_score": repairability_score,
         "circular_recovery_score": circular_recovery_score,
         "repair_cost": repair_cost,
+        "estimated_repair_cost": repair_cost,
         "component_recovery_value": round(component_recovery_value, 2),
         "estimated_refurbished_value": estimated_refurbished_value,
         "co2_avoided_kg": co2_avoided_kg,
+        "environmental_benefit": co2_avoided_kg,
+        "confidence_level": confidence_level,
         "recommendation": recommendation,
+        "recommended_action": recommendation,
         "technical_summary": technical_summary,
         "reasons": reasons,
         "components": components,
