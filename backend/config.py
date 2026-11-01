@@ -165,7 +165,7 @@ class Config:
     # Authentication & API Keys (Independent Credentials)
     # -------------------------------------------------------------------------
     # PARTNER_INBOUND_API_KEY: Authenticates incoming device-transfer requests from Collection
-    PARTNER_INBOUND_API_KEY = os.environ.get("PARTNER_INBOUND_API_KEY")
+    PARTNER_INBOUND_API_KEY = os.environ.get("PARTNER_INBOUND_API_KEY") or os.environ.get("PARTNER_API_KEY")
     if IS_PRODUCTION and not PARTNER_INBOUND_API_KEY:
         raise ValueError("PARTNER_INBOUND_API_KEY must be configured in production environment.")
 

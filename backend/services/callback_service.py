@@ -50,15 +50,24 @@ def send_assessment_result_to_collection(
     collection_url = current_app.config.get("COLLECTION_API_URL", "").rstrip("/")
     api_key = current_app.config.get("COLLECTION_API_KEY", "")
 
-    endpoint = f"{collection_url}/api/v1/assessment-results" if collection_url else "/api/v1/assessment-results"
+    clean_col_url = collection_url.rstrip("/")
+    if clean_col_url.endswith("/api/v1/assessment-results") or clean_col_url.endswith("/api/v1/collection/assessments"):
+        endpoint = clean_col_url
+    elif clean_col_url.endswith("/api/v1"):
+        endpoint = f"{clean_col_url}/assessment-results"
+    elif clean_col_url.endswith("/api"):
+        endpoint = f"{clean_col_url}/v1/assessment-results"
+    else:
+        endpoint = f"{clean_col_url}/api/v1/assessment-results" if clean_col_url else "/api/v1/assessment-results"
 
     payload = {
         "device_id": assessment.device_id,
         "transfer_id": transfer_id,
         "assessment_id": assessment.assessment_id,
-        "repairability_score": round(assessment.repairability_score, 1),
-        "circular_recovery_score": round(assessment.circular_recovery_score, 1),
+        "repairability_score": int(round(assessment.repairability_score)),
+        "circular_recovery_score": int(round(assessment.circular_recovery_score)),
         "repair_cost": round(assessment.repair_cost, 2),
+        "component_value": round(assessment.component_recovery_value, 2),
         "component_recovery_value": round(assessment.component_recovery_value, 2),
         "estimated_refurbished_value": round(assessment.estimated_refurbished_value, 2),
         "recommendation": assessment.recommendation,

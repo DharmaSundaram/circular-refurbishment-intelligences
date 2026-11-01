@@ -21,7 +21,7 @@ def require_partner_inbound_api_key(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        expected_key = current_app.config.get("PARTNER_INBOUND_API_KEY")
+        expected_key = current_app.config.get("PARTNER_INBOUND_API_KEY") or current_app.config.get("PARTNER_API_KEY")
         is_production = current_app.config.get("IS_PRODUCTION", False)
 
         if not expected_key:

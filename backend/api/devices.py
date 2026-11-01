@@ -68,13 +68,37 @@ def receive_incoming_device():
     if existing_idemp:
         try:
             cached_resp = json.loads(existing_idemp.response_payload)
+            if isinstance(cached_resp, dict):
+                if "persisted" not in cached_resp:
+                    cached_resp["persisted"] = True
+                cached_resp["idempotent"] = True
             return jsonify(cached_resp), 200
         except Exception:
-            return jsonify({"status": "success", "message": "Device already processed", "device_id": device_id}), 200
+            return jsonify({
+                "status": "success",
+                "message": "Device already processed",
+                "device_id": device_id,
+                "transfer_id": transfer_id,
+                "persisted": True,
+                "idempotent": True,
+            }), 200
 
     # Duplicate prevention: Check if device already exists with another transfer ID
     existing_device = Device.query.filter_by(device_id=device_id).first()
     if existing_device:
+        if existing_device.source_transfer_id == transfer_id:
+            return (
+                jsonify({
+                    "status": "success",
+                    "message": "Device already received under this transfer",
+                    "device_id": device_id,
+                    "transfer_id": transfer_id,
+                    "received_at": existing_device.received_at.isoformat() if existing_device.received_at else None,
+                    "persisted": True,
+                    "idempotent": True,
+                }),
+                200,
+            )
         return (
             jsonify({
                 "error": "Conflict",
@@ -131,7 +155,7 @@ def receive_incoming_device():
         if isinstance(files_data, list):
             for idx, file_item in enumerate(files_data):
                 if isinstance(file_item, dict):
-                    success, dev_file, msg = verify_and_ingest_partner_file(device_id, file_item)
+                    success, dev_file, msg = verify_and_ingest_partner_file(device_id, file_item, auto_commit=False)
                     if success and dev_file:
                         verified_count += 1
                     else:
@@ -139,7 +163,7 @@ def receive_incoming_device():
                             f"File attachment {idx} for device {device_id} could not be verified: {msg}"
                         )
 
-        # Response payload
+        # Response payload confirming atomic persistence
         resp_payload = {
             "status": "success",
             "message": "Device accepted and queued for refurbishment assessment",
@@ -147,6 +171,7 @@ def receive_incoming_device():
             "transfer_id": transfer_id,
             "received_at": device.received_at.isoformat(),
             "files_verified": verified_count,
+            "persisted": True,
         }
 
         # Inbound Transfer audit log

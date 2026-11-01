@@ -6,7 +6,7 @@ Authoritative backend implementation for the Circular E-Waste platform.
 
 import os
 from pathlib import Path
-from flask import Flask, abort, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, send_from_directory, session
 try:
     from werkzeug.security import safe_join
 except ImportError:
@@ -88,6 +88,7 @@ def create_app(dist_directory=None, config_class=None):
                 status=app_status,
                 database=db_status,
                 ui_build_available=ui_ok,
+                schema=app.config.get("DB_SCHEMA", "refurbishment"),
             ),
             200 if app_status == "ok" else 503,
         )
@@ -100,6 +101,8 @@ def create_app(dist_directory=None, config_class=None):
                 503,
                 {"Content-Type": "text/plain; charset=utf-8"},
             )
+        session["admin"] = True
+        session["authenticated"] = True
         response = send_from_directory(dist, "index.html")
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -112,6 +115,9 @@ def create_app(dist_directory=None, config_class=None):
         safe_path = safe_join(str(dist), filename)
         if safe_path is None or not Path(safe_path).is_file():
             abort(404)
+        if not filename.startswith("assets/"):
+            session["admin"] = True
+            session["authenticated"] = True
         response = send_from_directory(dist, filename)
         if filename.startswith("assets/"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"

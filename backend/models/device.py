@@ -64,6 +64,7 @@ class Device(db.Model):
 
         return {
             "id": self.device_id,
+            "device_id": self.device_id,
             "name": f"{self.brand} {self.model}".strip(),
             "type": self.device_type,
             "brand": self.brand,

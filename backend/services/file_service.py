@@ -62,6 +62,10 @@ def register_remote_file_reference(
     is_private: bool = True,
 ) -> DeviceFile:
     """Register a remote file reference without assuming file contents were transferred."""
+    existing = DeviceFile.query.filter_by(storage_key=storage_key).first()
+    if existing:
+        return existing
+
     device_file = DeviceFile(
         file_id=f"FILE-{uuid.uuid4().hex[:10].upper()}",
         storage_key=storage_key,
@@ -167,6 +171,7 @@ def upload_file_to_storage(
 def verify_and_ingest_partner_file(
     device_id: str,
     file_info: dict,
+    auto_commit: bool = False,
 ) -> Tuple[bool, Optional[DeviceFile], str]:
     """Ingest partner file reference, verifying actual accessibility.
 
@@ -176,11 +181,29 @@ def verify_and_ingest_partner_file(
     if not isinstance(file_info, dict):
         return False, None, "Invalid file descriptor"
 
-    original_filename = secure_filename(file_info.get("name") or "file.bin")
+    original_filename = secure_filename(
+        file_info.get("original_filename")
+        or file_info.get("name")
+        or file_info.get("filename")
+        or "file.bin"
+    )
     storage_key = file_info.get("storage_key") or file_info.get("key")
-    download_url = file_info.get("url") or file_info.get("download_url")
-    file_type = file_info.get("type") or "document"
+    download_url = (
+        file_info.get("download_url")
+        or file_info.get("signed_url")
+        or file_info.get("url")
+    )
+    file_type = file_info.get("file_type") or file_info.get("type") or "document"
     content_type = file_info.get("content_type") or "application/octet-stream"
+
+    # Avoid duplicate key collision if file already registered
+    if storage_key:
+        existing_file = DeviceFile.query.filter_by(storage_key=storage_key).first()
+        if existing_file:
+            existing_file.device_id = device_id
+            if auto_commit:
+                db.session.commit()
+            return True, existing_file, "Verified (existing storage reference)"
 
     supabase_cfg = get_supabase_storage_config()
     is_production = current_app.config.get("IS_PRODUCTION", False)
@@ -211,7 +234,8 @@ def verify_and_ingest_partner_file(
                     is_local=False,
                 )
                 db.session.add(dev_file)
-                db.session.commit()
+                if auto_commit:
+                    db.session.commit()
                 return True, dev_file, "Verified in shared Supabase Storage bucket"
             elif resp.status_code == 404:
                 return False, None, f"File {storage_key} not found in shared storage bucket {supabase_cfg['bucket']}"
@@ -221,7 +245,11 @@ def verify_and_ingest_partner_file(
     # 2. Server-to-server authenticated transfer if download URL is provided
     if download_url:
         try:
-            partner_key = current_app.config.get("COLLECTION_API_KEY") or current_app.config.get("PARTNER_INBOUND_API_KEY")
+            partner_key = (
+                current_app.config.get("COLLECTION_API_KEY")
+                or current_app.config.get("PARTNER_INBOUND_API_KEY")
+                or current_app.config.get("PARTNER_API_KEY")
+            )
             req_headers = {"X-API-Key": partner_key} if partner_key else {}
             resp = requests.get(download_url, headers=req_headers, timeout=10)
             if resp.status_code == 200:
@@ -234,6 +262,9 @@ def verify_and_ingest_partner_file(
                     folder="devices",
                     is_private=True,
                 )
+                db.session.add(dev_file)
+                if auto_commit:
+                    db.session.commit()
                 return True, dev_file, "Transferred and stored via server-to-server transfer"
         except Exception as e:
             current_app.logger.warning(f"Server-to-server download error from {download_url}: {e}")
@@ -253,7 +284,8 @@ def verify_and_ingest_partner_file(
                 is_local=False,
             )
             db.session.add(dev_file)
-            db.session.commit()
+            if auto_commit:
+                db.session.commit()
             return True, dev_file, "Registered in local testing mode"
 
     return False, None, "File reference is not accessible: verification failed"
