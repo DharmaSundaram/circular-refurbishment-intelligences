@@ -64,6 +64,7 @@ def send_assessment_result_to_collection(
         "device_id": assessment.device_id,
         "transfer_id": transfer_id,
         "assessment_id": assessment.assessment_id,
+        "idempotency_key": assessment.assessment_id,
         "repairability_score": round(float(assessment.repairability_score), 1),
         "circular_recovery_score": round(float(assessment.circular_recovery_score), 1),
         "technical_condition_score": round(float(assessment.technical_condition_score), 1),
@@ -78,6 +79,7 @@ def send_assessment_result_to_collection(
         "recommended_action": assessment.recommendation,
         "co2_avoided_kg": round(float(assessment.co2_avoided_kg), 1),
         "environmental_benefit": round(float(assessment.co2_avoided_kg), 1),
+        "notes": assessment.technical_summary,
         "technical_summary": assessment.technical_summary,
         "assessed_at": assessment.assessed_at.isoformat() if assessment.assessed_at else datetime.now(timezone.utc).isoformat(),
     }
@@ -180,7 +182,11 @@ def send_assessment_result_to_collection(
 
     db.session.commit()
 
-    msg = f"Assessment result sent to Collection Application · {http_status} {'OK' if http_status == 200 else ''}".strip()
+    if is_success:
+        msg = f"Assessment result delivered to Collection Application · {http_status} OK"
+    else:
+        detailed_err = error_msg or f"HTTP {http_status}"
+        msg = f"Failed to deliver assessment to Collection Application (HTTP {http_status}): {detailed_err}"
     return is_success, http_status, msg, transfer
 
 
@@ -242,7 +248,11 @@ def retry_partner_transfer(transfer_id: str) -> Tuple[bool, int, str, Optional[T
 
         db.session.commit()
 
-        msg = f"Transfer retried · {resp.status_code} {'OK' if resp.status_code == 200 else ''}".strip()
+        if is_success:
+            msg = f"Transfer retried · {resp.status_code} OK"
+        else:
+            detailed_err = error_msg or f"HTTP {resp.status_code}"
+            msg = f"Retry failed (HTTP {resp.status_code}): {detailed_err}"
         return is_success, resp.status_code, msg, transfer
 
     except requests.exceptions.RequestException as e:

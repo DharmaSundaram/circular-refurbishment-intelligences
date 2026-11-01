@@ -289,6 +289,7 @@ def send_assessment_result():
             "success": success,
             "http_status": http_code,
             "message": message,
+            "error": message if not success else None,
             "transfer_id": transfer.transfer_id if transfer else None,
         }),
         response_status,
