@@ -452,3 +452,19 @@ def test_session_lifecycle_and_protected_endpoints(client, app):
         assert client.get("/api/v1/dashboard").status_code == 401
         assert client.get("/api/v1/transfers").status_code == 401
 
+
+def test_vercel_entrypoint_registers_auth_routes():
+    """Verify that importing api package as Vercel does registers all auth routes."""
+    import sys
+    from pathlib import Path
+    root_dir = Path(__file__).resolve().parent.parent.parent
+    if str(root_dir) not in sys.path:
+        sys.path.insert(0, str(root_dir))
+    import api
+    from app import create_app
+    app = create_app()
+    rules = [str(r) for r in app.url_map.iter_rules()]
+    assert "/api/v1/auth/login" in rules
+    assert "/api/v1/auth/session" in rules
+    assert "/api/v1/auth/logout" in rules
+

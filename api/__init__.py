@@ -16,6 +16,7 @@ from api.assessments import assessments_bp
 from api.transfers import transfers_bp
 from api.reports import reports_bp
 from api.analytics import analytics_bp
+from api.auth import auth_bp
 
 def register_api_blueprints(app):
     """Register all API blueprints on the Flask application."""
@@ -24,3 +25,4 @@ def register_api_blueprints(app):
     app.register_blueprint(transfers_bp)
     app.register_blueprint(reports_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(auth_bp)
