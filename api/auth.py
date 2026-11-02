@@ -301,3 +301,4 @@ def check_session():
         "admin": is_auth,
         "admin_key_configured": bool(admin_key),
     }), 200
+
