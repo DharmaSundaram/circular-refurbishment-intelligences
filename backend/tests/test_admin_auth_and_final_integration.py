@@ -304,3 +304,151 @@ def test_complete_roundtrip_device_to_collection_persistence(client, app):
         assert resend_resp.status_code == 200
         assert resend_resp.get_json()["success"] is True
 
+
+def test_admin_key_quote_and_whitespace_sanitization(client, app, monkeypatch):
+    """Verify administrator login succeeds when credentials have surrounding quotes or whitespace."""
+    with app.app_context():
+        # Set configured ADMIN_API_KEY with outer quotes and whitespace as commonly entered in Vercel
+        monkeypatch.setenv("ADMIN_API_KEY", ' "prod-admin-secret-2026" \n')
+
+        # 1. Login with plain unquoted key
+        r1 = client.post("/api/v1/auth/login", json={"admin_key": "prod-admin-secret-2026"})
+        assert r1.status_code == 200
+        assert r1.get_json()["authenticated"] is True
+
+        # Clear session
+        client.post("/api/v1/auth/logout")
+
+        # 2. Login with user-entered double quotes
+        r2 = client.post("/api/v1/auth/login", json={"admin_key": '"prod-admin-secret-2026"'})
+        assert r2.status_code == 200
+        assert r2.get_json()["authenticated"] is True
+
+        client.post("/api/v1/auth/logout")
+
+        # 3. Login with user-entered single quotes and leading/trailing whitespace
+        r3 = client.post("/api/v1/auth/login", json={"admin_key": "  'prod-admin-secret-2026'  "})
+        assert r3.status_code == 200
+        assert r3.get_json()["authenticated"] is True
+
+
+def test_admin_login_incorrect_key(client, app):
+    """Verify administrator login rejects invalid keys with HTTP 401."""
+    with app.app_context():
+        resp = client.post("/api/v1/auth/login", json={"admin_key": "completely-wrong-key"})
+        assert resp.status_code == 401
+        data = resp.get_json()
+        assert data["error"] == "Unauthorized"
+        assert "Invalid administrator credentials" in data["message"]
+
+        # Verify session was NOT established
+        sess = client.get("/api/v1/auth/session")
+        assert sess.status_code == 200
+        assert sess.get_json()["authenticated"] is False
+
+
+def test_admin_login_missing_credentials(client, app):
+    """Verify administrator login rejects missing or empty credentials with HTTP 401."""
+    with app.app_context():
+        # Empty JSON
+        r1 = client.post("/api/v1/auth/login", json={})
+        assert r1.status_code == 401
+        assert "Missing administrator credentials" in r1.get_json()["message"]
+
+        # Blank string key
+        r2 = client.post("/api/v1/auth/login", json={"admin_key": "   "})
+        assert r2.status_code == 401
+        assert "Missing administrator credentials" in r2.get_json()["message"]
+
+
+def test_cross_credential_isolation_in_login_and_headers(client, app):
+    """Verify PARTNER_INBOUND_API_KEY and COLLECTION_API_KEY cannot be used for admin login or admin headers."""
+    with app.app_context():
+        app.config["IS_PRODUCTION"] = True
+
+        # 1. Inbound key in login body -> 403 Forbidden
+        r_inbound = client.post(
+            "/api/v1/auth/login",
+            json={"admin_key": "test-inbound-key-collection"},
+        )
+        assert r_inbound.status_code == 403
+        assert "PARTNER_INBOUND_API_KEY cannot be used" in r_inbound.get_json()["message"]
+
+        # 2. Outbound collection key in login body -> 403 Forbidden
+        r_outbound = client.post(
+            "/api/v1/auth/login",
+            json={"admin_key": "test-outbound-key-collection"},
+        )
+        assert r_outbound.status_code == 403
+        assert "COLLECTION_API_KEY cannot be used" in r_outbound.get_json()["message"]
+
+        # 3. Collection key in X-API-Key header to protected endpoint -> 403 Forbidden
+        r_col_hdr = client.get(
+            "/api/v1/devices",
+            headers={"X-API-Key": "test-outbound-key-collection"},
+        )
+        assert r_col_hdr.status_code == 403
+        assert "COLLECTION_API_KEY is not permitted" in r_col_hdr.get_json()["message"]
+
+
+def test_admin_key_environment_variable_aliases(client, app, monkeypatch):
+    """Verify administrator authentication recognizes all standard environment variable aliases."""
+    aliases = ["PARTNER_ADMIN_API_KEY", "REFURBISHMENT_ADMIN_API_KEY", "ADMIN_KEY"]
+    for alias in aliases:
+        with app.app_context():
+            app.config["ADMIN_API_KEY"] = None
+            monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+            monkeypatch.delenv("PARTNER_ADMIN_API_KEY", raising=False)
+            monkeypatch.delenv("REFURBISHMENT_ADMIN_API_KEY", raising=False)
+            monkeypatch.delenv("ADMIN_KEY", raising=False)
+
+            secret = f"key-via-{alias.lower()}"
+            monkeypatch.setenv(alias, secret)
+
+            resp = client.post("/api/v1/auth/login", json={"admin_key": secret})
+            assert resp.status_code == 200, f"Failed for alias {alias}"
+            assert resp.get_json()["authenticated"] is True
+
+            client.post("/api/v1/auth/logout")
+
+
+def test_session_lifecycle_and_protected_endpoints(client, app):
+    """Verify session grants access to protected endpoints and session expiration/logout revokes it with HTTP 401."""
+    with app.app_context():
+        # Initial unauthenticated request -> 401
+        r_dev_unauth = client.get("/api/v1/devices")
+        assert r_dev_unauth.status_code == 401
+        assert "Administrator authentication required" in r_dev_unauth.get_json()["message"]
+
+        r_dash_unauth = client.get("/api/v1/dashboard")
+        assert r_dash_unauth.status_code == 401
+
+        r_trf_unauth = client.get("/api/v1/transfers")
+        assert r_trf_unauth.status_code == 401
+
+        # Establish administrator session
+        login_resp = client.post(
+            "/api/v1/auth/login",
+            json={"admin_key": "test-prod-admin-key-2026"},
+        )
+        assert login_resp.status_code == 200
+
+        # Protected endpoints succeed via session cookie
+        assert client.get("/api/v1/devices").status_code == 200
+        assert client.get("/api/v1/dashboard").status_code == 200
+        assert client.get("/api/v1/transfers").status_code == 200
+
+        # Logout / invalidate session
+        logout_resp = client.post("/api/v1/auth/logout")
+        assert logout_resp.status_code == 200
+
+        # Verify session endpoint confirms unauthenticated
+        sess_check = client.get("/api/v1/auth/session")
+        assert sess_check.status_code == 200
+        assert sess_check.get_json()["authenticated"] is False
+
+        # Protected endpoints once again reject with 401
+        assert client.get("/api/v1/devices").status_code == 401
+        assert client.get("/api/v1/dashboard").status_code == 401
+        assert client.get("/api/v1/transfers").status_code == 401
+

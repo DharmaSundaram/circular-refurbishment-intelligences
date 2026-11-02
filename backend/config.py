@@ -110,7 +110,7 @@ class Config:
     )
 
     # Application Secret Key
-    SECRET_KEY = os.environ.get("SECRET_KEY") or os.environ.get("CIRCULAR_SECRET_KEY")
+    SECRET_KEY = (os.environ.get("SECRET_KEY") or os.environ.get("CIRCULAR_SECRET_KEY") or "").strip().strip("\"'")
     if not SECRET_KEY:
         if IS_PRODUCTION:
             raise ValueError("SECRET_KEY must be configured in production environment.")
@@ -175,7 +175,11 @@ class Config:
     # Authentication & API Keys (Independent Credentials)
     # -------------------------------------------------------------------------
     # PARTNER_INBOUND_API_KEY: Authenticates incoming device-transfer requests from Collection
-    PARTNER_INBOUND_API_KEY = os.environ.get("PARTNER_INBOUND_API_KEY") or os.environ.get("PARTNER_API_KEY")
+    PARTNER_INBOUND_API_KEY = (
+        os.environ.get("PARTNER_INBOUND_API_KEY")
+        or os.environ.get("PARTNER_API_KEY")
+        or ""
+    ).strip().strip("\"'") or None
     if IS_PRODUCTION and not PARTNER_INBOUND_API_KEY:
         raise ValueError("PARTNER_INBOUND_API_KEY must be configured in production environment.")
 
@@ -184,7 +188,7 @@ class Config:
         os.environ.get("COLLECTION_API_KEY")
         or os.environ.get("CIRCULAR_API_KEY")
         or ""
-    ).strip()
+    ).strip().strip("\"'")
     if IS_PRODUCTION and not COLLECTION_API_KEY:
         raise ValueError("COLLECTION_API_KEY must be configured in production environment.")
 
@@ -196,9 +200,11 @@ class Config:
     # ADMIN_API_KEY: Privileged internal administrative API key
     ADMIN_API_KEY = (
         os.environ.get("ADMIN_API_KEY")
+        or os.environ.get("PARTNER_ADMIN_API_KEY")
         or os.environ.get("REFURBISHMENT_ADMIN_API_KEY")
+        or os.environ.get("ADMIN_KEY")
         or ""
-    ).strip() or None
+    ).strip().strip("\"'") or None
 
     # Legacy CIRCULAR_API_KEY cannot override independent credentials in production
     if IS_PRODUCTION:

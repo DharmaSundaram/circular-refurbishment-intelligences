@@ -6,46 +6,64 @@ from functools import wraps
 from flask import Blueprint, request, jsonify, current_app, session
 
 
+def _clean_key(val: str) -> str:
+    """Normalize credential string by stripping leading/trailing whitespace and enclosing quotes."""
+    if not val:
+        return ""
+    cleaned = str(val).strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (
+        cleaned.startswith("'") and cleaned.endswith("'")
+    ):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 def get_configured_admin_key() -> str:
     """Retrieve ADMIN_API_KEY dynamically at runtime from os.environ or Flask config.
 
     Guarantees that environment variables configured in Vercel are immediately
     recognized without requiring server restarts or stale configuration caching.
+    Supports ADMIN_API_KEY, PARTNER_ADMIN_API_KEY, REFURBISHMENT_ADMIN_API_KEY, ADMIN_KEY.
+    Strips whitespace and surrounding quotes.
     """
     raw = (
         os.environ.get("ADMIN_API_KEY")
         or current_app.config.get("ADMIN_API_KEY")
+        or os.environ.get("PARTNER_ADMIN_API_KEY")
+        or current_app.config.get("PARTNER_ADMIN_API_KEY")
         or os.environ.get("REFURBISHMENT_ADMIN_API_KEY")
         or current_app.config.get("REFURBISHMENT_ADMIN_API_KEY")
+        or os.environ.get("ADMIN_KEY")
+        or current_app.config.get("ADMIN_KEY")
         or ""
     )
-    return str(raw).strip()
+    return _clean_key(raw)
 
 
 def _extract_request_key() -> str:
     """Extract API key from X-API-Key, X-Admin-Key, Authorization header, or JSON body."""
     # 1. Primary Headers
-    key = request.headers.get("X-API-Key", "").strip()
+    key = _clean_key(request.headers.get("X-API-Key", ""))
     if not key:
-        key = request.headers.get("X-Admin-Key", "").strip()
+        key = _clean_key(request.headers.get("X-Admin-Key", ""))
     if not key:
-        auth = request.headers.get("Authorization", "").strip()
+        auth = str(request.headers.get("Authorization", "")).strip()
         if auth:
             if auth.lower().startswith("bearer "):
-                key = auth.split(" ", 1)[1].strip()
+                key = _clean_key(auth.split(" ", 1)[1])
             else:
-                key = auth
+                key = _clean_key(auth)
 
     # 2. Body inspection for administrative JSON actions
     if not key and request.is_json:
         data = request.get_json(silent=True) or {}
         if isinstance(data, dict):
-            key = (
+            key = _clean_key(
                 data.get("admin_key")
                 or data.get("admin_api_key")
                 or data.get("api_key")
                 or ""
-            ).strip()
+            )
 
     return key
 
@@ -57,7 +75,12 @@ def require_partner_inbound_api_key(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        expected_key = current_app.config.get("PARTNER_INBOUND_API_KEY") or current_app.config.get("PARTNER_API_KEY")
+        expected_key = _clean_key(
+            current_app.config.get("PARTNER_INBOUND_API_KEY")
+            or os.environ.get("PARTNER_INBOUND_API_KEY")
+            or current_app.config.get("PARTNER_API_KEY")
+            or os.environ.get("PARTNER_API_KEY")
+        )
         is_production = current_app.config.get("IS_PRODUCTION", False)
 
         if not expected_key:
@@ -69,7 +92,7 @@ def require_partner_inbound_api_key(f):
                     }),
                     500,
                 )
-            expected_key = current_app.config.get("CIRCULAR_API_KEY")
+            expected_key = _clean_key(current_app.config.get("CIRCULAR_API_KEY"))
 
         if not expected_key:
             return (
@@ -90,7 +113,7 @@ def require_partner_inbound_api_key(f):
                 401,
             )
 
-        if not hmac.compare_digest(supplied_key, str(expected_key).strip()):
+        if not hmac.compare_digest(supplied_key, expected_key):
             return jsonify({"error": "Forbidden", "message": "Invalid API key"}), 403
 
         return f(*args, **kwargs)
@@ -105,7 +128,8 @@ require_api_key = require_partner_inbound_api_key
 def require_internal_auth(f):
     """Enforce administrator authentication via session or configured ADMIN_API_KEY.
 
-    PARTNER_INBOUND_API_KEY is strictly rejected here (only authorized for device ingestion).
+    Cross-credential protection: PARTNER_INBOUND_API_KEY and COLLECTION_API_KEY
+    are strictly rejected here (HTTP 403).
     If ADMIN_API_KEY is not configured at runtime in production, returns HTTP 500 Configuration Error.
     """
     @wraps(f)
@@ -117,9 +141,38 @@ def require_internal_auth(f):
         if session.get("admin") or session.get("authenticated"):
             return f(*args, **kwargs)
 
+        # Cross-credentials to explicitly forbid
+        inbound_key = _clean_key(
+            current_app.config.get("PARTNER_INBOUND_API_KEY")
+            or os.environ.get("PARTNER_INBOUND_API_KEY")
+            or current_app.config.get("PARTNER_API_KEY")
+            or os.environ.get("PARTNER_API_KEY")
+        )
+        collection_key = _clean_key(
+            os.environ.get("COLLECTION_API_KEY")
+            or (current_app.config.get("COLLECTION_API_KEY") if is_production else None)
+        )
+        if not collection_key and is_production:
+            collection_key = _clean_key(current_app.config.get("COLLECTION_API_KEY"))
+
         # 2. Check API Key header/payload (for machine / server-side administrative access)
         supplied_key = _extract_request_key()
         if supplied_key:
+            # Explicitly reject cross-credential usage
+            if inbound_key and (not admin_key or not hmac.compare_digest(inbound_key, admin_key)):
+                if hmac.compare_digest(supplied_key, inbound_key):
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": "Invalid API key for administrative operations. PARTNER_INBOUND_API_KEY is not permitted.",
+                    }), 403
+
+            if collection_key and (not admin_key or not hmac.compare_digest(collection_key, admin_key)):
+                if hmac.compare_digest(supplied_key, collection_key):
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": "Invalid API key for administrative operations. COLLECTION_API_KEY is not permitted.",
+                    }), 403
+
             # If in production and ADMIN_API_KEY is missing from environment, return 500 Configuration Error
             if is_production and not admin_key:
                 return jsonify({
@@ -128,23 +181,15 @@ def require_internal_auth(f):
                 }), 500
 
             valid_keys = [admin_key] if admin_key else []
-            if not is_production:
+            if not is_production and not admin_key:
                 dev_key = current_app.config.get("CIRCULAR_API_KEY")
                 if dev_key:
-                    valid_keys.append(str(dev_key).strip())
+                    valid_keys.append(_clean_key(str(dev_key)))
                 valid_keys.append("circ-refurb-secret-key-2026")
 
             # Validate against configured admin keys
             if any(hmac.compare_digest(supplied_key, vk) for vk in valid_keys if vk):
                 return f(*args, **kwargs)
-
-            # PARTNER_INBOUND_API_KEY is explicitly NOT permitted for general workspace administration
-            inbound_key = current_app.config.get("PARTNER_INBOUND_API_KEY") or os.environ.get("PARTNER_INBOUND_API_KEY")
-            if inbound_key and hmac.compare_digest(supplied_key, str(inbound_key).strip()):
-                return jsonify({
-                    "error": "Forbidden",
-                    "message": "Invalid API key for administrative operations. PARTNER_INBOUND_API_KEY is not permitted.",
-                }), 403
 
             return jsonify({
                 "error": "Unauthorized",
@@ -176,9 +221,40 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/api/v1/auth")
 def admin_login():
     """Establish an administrator session for dashboard operations."""
     data = request.get_json(silent=True) or {}
-    key = (data.get("admin_key") or data.get("password") or _extract_request_key() or "").strip()
+    key = _clean_key(data.get("admin_key") or data.get("password") or _extract_request_key() or "")
     admin_key = get_configured_admin_key()
     is_production = current_app.config.get("IS_PRODUCTION", False) or os.environ.get("VERCEL") == "1"
+
+    if not key:
+        return jsonify({"error": "Unauthorized", "message": "Missing administrator credentials"}), 401
+
+    # Cross-credentials to explicitly forbid
+    inbound_key = _clean_key(
+        current_app.config.get("PARTNER_INBOUND_API_KEY")
+        or os.environ.get("PARTNER_INBOUND_API_KEY")
+        or current_app.config.get("PARTNER_API_KEY")
+        or os.environ.get("PARTNER_API_KEY")
+    )
+    collection_key = _clean_key(
+        os.environ.get("COLLECTION_API_KEY")
+        or (current_app.config.get("COLLECTION_API_KEY") if is_production else None)
+    )
+    if not collection_key and is_production:
+        collection_key = _clean_key(current_app.config.get("COLLECTION_API_KEY"))
+
+    if inbound_key and (not admin_key or not hmac.compare_digest(inbound_key, admin_key)):
+        if hmac.compare_digest(key, inbound_key):
+            return jsonify({
+                "error": "Forbidden",
+                "message": "PARTNER_INBOUND_API_KEY cannot be used for administrator login. Please provide authorized ADMIN_API_KEY.",
+            }), 403
+
+    if collection_key and (not admin_key or not hmac.compare_digest(collection_key, admin_key)):
+        if hmac.compare_digest(key, collection_key):
+            return jsonify({
+                "error": "Forbidden",
+                "message": "COLLECTION_API_KEY cannot be used for administrator login. Please provide authorized ADMIN_API_KEY.",
+            }), 403
 
     if is_production and not admin_key:
         return jsonify({
@@ -186,14 +262,11 @@ def admin_login():
             "message": "ADMIN_API_KEY is not configured in the server environment. Please configure ADMIN_API_KEY in Vercel environment variables.",
         }), 500
 
-    if not key:
-        return jsonify({"error": "Unauthorized", "message": "Missing administrator credentials"}), 401
-
     valid_keys = [admin_key] if admin_key else []
-    if not is_production:
+    if not is_production and not admin_key:
         dev_key = current_app.config.get("CIRCULAR_API_KEY")
         if dev_key:
-            valid_keys.append(str(dev_key).strip())
+            valid_keys.append(_clean_key(str(dev_key)))
         valid_keys.append("circ-refurb-secret-key-2026")
 
     match = any(hmac.compare_digest(key, vk) for vk in valid_keys if vk)
